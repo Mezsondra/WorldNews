@@ -1,0 +1,57 @@
+services:
+  database:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: worldnews
+      POSTGRES_USER: worldnews
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U worldnews"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  app:
+    build: .
+    environment: &app-env
+      DATABASE_URL: postgresql://worldnews:${POSTGRES_PASSWORD}@database:5432/worldnews
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:?Set DASHBOARD_PASSWORD (24+ characters) in .env}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:4310}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      TTS_PROVIDER: local
+    ports:
+      - 127.0.0.1:4310:4310
+    volumes:
+      - media:/app/data
+    depends_on:
+      database:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:4310/health').then(r=>{if(!r.ok)process.exit(1)})",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+  worker:
+    build: .
+    command: [npm, run, worker]
+    environment: *app-env
+    volumes:
+      - media:/app/data
+    depends_on:
+      app:
+        condition: service_healthy
+    cpus: 2
+    mem_limit: 2g
+    restart: unless-stopped
+volumes:
+  database:
+  media:
