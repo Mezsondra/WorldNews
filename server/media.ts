@@ -3,9 +3,16 @@ import { promisify } from "node:util";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
-import type { Story, Render } from "../shared/types.js";
-import { dataDir } from "./db.js";
+import type { Story, Render, CostEvent } from "../shared/types.js";
+import { dataDir, Store } from "./db.js";
 import { now } from "./domain.js";
+import {
+  geminiSpeech,
+  assemblyCaptions,
+  reserve,
+  captionDifferences,
+  voiceLabel,
+} from "./providers.js";
 export const exec = promisify(execFile);
 export const escape = (s: string) =>
   s.replace(
@@ -94,6 +101,17 @@ export function frame(
   const sources = sourceIds
     .map((sid) => story.sources.find((s) => s.id === sid))
     .filter(Boolean);
+  const publishers = [...new Set(sources.map((s) => s!.publisher))];
+  const publisherLabel =
+    (publishers[0] || "Sources pending").slice(0, 38) +
+    (sources.length > 1 ? ` · ${sources.length} source records` : "");
+  const sourceDates = [
+    ...new Set(sources.map((s) => s!.publishedAt?.slice(0, 10) || "undated")),
+  ];
+  const dateLabel =
+    "Source dates: " +
+    sourceDates.slice(0, 2).join(" · ") +
+    (sourceDates.length > 2 ? " · more on source page" : "");
   const date = story.eventAt
     ? new Date(story.eventAt).toISOString().slice(0, 10)
     : "Date pending";
@@ -128,11 +146,11 @@ export function frame(
     ${svgText(story.title, 80, card ? 390 : 405, titleSize, Math.floor(920 / (titleSize * 0.55)), "#f3f1e8", "serif", 1.13)}
     <path d="M80 ${card ? 760 : 850}h95" stroke="#bed897" stroke-width="6"/>
     ${svgText(body, 80, card ? 845 : 950, bodySize, Math.floor(900 / (bodySize * 0.55)), "#d9e0d2", "sans-serif", 1.4)}
-    ${svgText(sources.map((s) => s!.publisher).join(" · ") || "Sources pending", 80, height - 280, 25, 55, "#c8d8b8")}
-    ${svgText(sources.map((s) => s!.publishedAt?.slice(0, 10) || "Date not provided").join(" · "), 80, height - 235, 22, 60, "#aabbac")}
-    ${asset ? svgText((asset.archive ? "ARCHIVE · " : "") + asset.creator + " · " + asset.eventDate + " · " + asset.location, 80, height - 325, 18, 75, "#b7c8a6") : ""}
-    ${svgText((process.env.PUBLIC_BASE_URL || "http://localhost:4310").replace(/^https?:\/\//, "") + "/s/" + story.id.slice(0, 8) + "?v=" + story.version, 80, height - 175, 22, 70, "#e5ebdd")}
-    ${svgText(story.demo ? "HISTORICAL SAMPLE · NOT CURRENT NEWS" : "DRAFT · EDITORIAL APPROVAL REQUIRED", 80, height - 115, 19, 75, "#adc594")}
+    ${svgText(publisherLabel, 80, height - 300, 34, 48, "#c8d8b8")}
+    ${svgText(dateLabel, 80, height - 245, 30, 53, "#aabbac")}
+    ${asset ? svgText((asset.archive ? "ARCHIVE · " : "") + asset.creator.slice(0, 40) + " · " + asset.eventDate + " · " + asset.location.slice(0, 30), 80, height - 360, 18, 75, "#b7c8a6") : ""}
+    ${svgText((process.env.PUBLIC_BASE_URL || "http://localhost:4310").replace(/^https?:\/\//, "") + "/s/" + story.id.slice(0, 8) + "?v=" + story.version, 80, height - 190, 30, 53, "#e5ebdd")}
+    ${svgText(story.demo ? "HISTORICAL SAMPLE · NOT CURRENT NEWS" : "DRAFT · EDITORIAL APPROVAL REQUIRED", 80, height - 115, 22, 70, "#adc594")}
     ${!card ? svgText(String(segmentIndex + 1).padStart(2, "0") + " / " + String(story.segments.length).padStart(2, "0"), 850, height - 115, 22, 15, "#adc594") : ""}
   </svg>`;
 }
@@ -141,9 +159,49 @@ function pronounce(text: string, story: Story) {
     text = text.split(from).join(to);
   return text;
 }
-async function narration(text: string, file: string, story: Story) {
+async function narration(
+  text: string,
+  file: string,
+  story: Story,
+  store?: Store,
+  event?: CostEvent,
+) {
   text = pronounce(text, story);
-  if (process.env.TTS_PROVIDER === "elevenlabs") {
+  if (process.env.TTS_PROVIDER === "gemini") {
+    const result = await geminiSpeech(text, process.env.GEMINI_VOICE || "Kore");
+    await writeFile(file + ".provider-audio", result.audio);
+    const isWav = result.audio.subarray(0, 4).toString() === "RIFF";
+    if (!isWav && !/pcm|L16/i.test(result.mime))
+      throw new Error("Gemini returned an unsupported audio encoding.");
+    await exec(
+      "ffmpeg",
+      [
+        "-y",
+        ...(!isWav ? ["-f", "s16le", "-ar", "24000", "-ac", "1"] : []),
+        "-i",
+        file + ".provider-audio",
+        "-ar",
+        "48000",
+        "-ac",
+        "1",
+        file,
+      ],
+      { timeout: 60000 },
+    );
+    if (store && event) {
+      event.usage = {
+        ...event.usage,
+        scenes: Number(event.usage?.scenes || 0) + 1,
+        lastUsage: result.usage,
+        requests: [
+          ...(Array.isArray(event.usage?.requests) ? event.usage.requests : []),
+          { providerId: result.providerId, usage: result.usage },
+        ],
+      };
+      event.providerId = result.providerId;
+      await store.finishCost(event);
+    }
+  } else if (process.env.TTS_PROVIDER === "elevenlabs") {
     const key = process.env.ELEVENLABS_API_KEY,
       voice = process.env.ELEVENLABS_VOICE_ID;
     if (!key || !voice || !/^[a-zA-Z0-9_-]+$/.test(voice))
@@ -205,182 +263,326 @@ const timestamp = (n: number) => {
 export async function renderStory(
   story: Story,
   progress: (value: string) => Promise<void>,
+  store?: Store,
 ): Promise<Render> {
   const paidChars = story.segments.reduce(
     (n, s) => n + pronounce(s.text, story).length,
     0,
   );
   if (
-    process.env.TTS_PROVIDER === "elevenlabs" &&
+    ["elevenlabs", "gemini"].includes(process.env.TTS_PROVIDER || "") &&
     paidChars > Number(process.env.MAX_PAID_CHARACTERS_PER_RENDER || 1500)
   )
     throw new Error(
       "Paid narration character ceiling exceeded. Shorten the script or explicitly raise the configured cap.",
     );
-  const relative = `renders/${story.id}/v${story.version}`,
-    dir = path.join(dataDir, relative);
-  await mkdir(dir, { recursive: true });
-  const image = async (i: number, h: number) => {
-    const a = story.assets.find((a) => a.id === story.segments[i]?.assetId);
-    return Buffer.from(
-      frame(
-        story,
-        i,
-        h,
-        a
-          ? (await readFile(path.join(dataDir, a.file))).toString("base64")
-          : undefined,
-      ),
+  const provider = process.env.TTS_PROVIDER || "local";
+  if (!["local", "gemini", "elevenlabs"].includes(provider))
+    throw new Error("Unknown narration provider.");
+  if (
+    provider === "gemini" &&
+    (!process.env.GEMINI_API_KEY || story.segments.length > 8)
+  )
+    throw new Error(
+      "Gemini needs its API key and at most eight scenes for the bounded pilot.",
     );
-  };
-  await sharp(await image(0, 1350))
-    .png()
-    .toFile(path.join(dir, "card.png"));
-  await sharp(await image(0, 1920))
-    .png()
-    .toFile(path.join(dir, "story.png"));
-  const scenes: any[] = [];
-  let offset = 0;
-  const cues: string[] = [];
-  for (let i = 0; i < story.segments.length; i++) {
-    await progress(
-      `Narrating and rendering scene ${i + 1} of ${story.segments.length}`,
+  if (provider === "elevenlabs")
+    throw new Error(
+      "ElevenLabs is outside this capped pilot. Select local or Gemini narration.",
     );
-    const segment = story.segments[i];
-    const wav = path.join(dir, `scene-${i}.wav`),
-      png = path.join(dir, `scene-${i}.png`);
-    const duration = await narration(segment.text, wav, story);
-    await sharp(await image(i, 1920))
+  if (
+    process.env.CAPTIONS_PROVIDER === "assemblyai" &&
+    !process.env.ASSEMBLYAI_API_KEY
+  )
+    throw new Error("AssemblyAI captions need ASSEMBLYAI_API_KEY.");
+  if (
+    (provider === "gemini" || process.env.CAPTIONS_PROVIDER === "assemblyai") &&
+    !store
+  )
+    throw new Error("Paid media requires the persistent pilot ledger.");
+  const voiceEvent =
+    provider === "gemini"
+      ? await reserve(store!, story, "gemini", "narration", 1)
+      : undefined;
+  let captionEvent: CostEvent | undefined;
+  try {
+    const relative = `renders/${story.id}/v${story.version}`,
+      dir = path.join(dataDir, relative);
+    await mkdir(dir, { recursive: true });
+    const image = async (i: number, h: number) => {
+      const a = story.assets.find((a) => a.id === story.segments[i]?.assetId);
+      return Buffer.from(
+        frame(
+          story,
+          i,
+          h,
+          a
+            ? (await readFile(path.join(dataDir, a.file))).toString("base64")
+            : undefined,
+        ),
+      );
+    };
+    await sharp(await image(0, 1350))
       .png()
-      .toFile(png);
+      .toFile(path.join(dir, "card.png"));
+    await sharp(await image(0, 1920))
+      .png()
+      .toFile(path.join(dir, "story.png"));
+    const scenes: any[] = [];
+    let offset = 0;
+    const cues: string[] = [];
+    for (let i = 0; i < story.segments.length; i++) {
+      await progress(
+        `Narrating and rendering scene ${i + 1} of ${story.segments.length}`,
+      );
+      const segment = story.segments[i];
+      const wav = path.join(dir, `scene-${i}.wav`),
+        png = path.join(dir, `scene-${i}.png`);
+      const duration = await narration(
+        segment.text,
+        wav,
+        story,
+        store,
+        voiceEvent,
+      );
+      if (!Number.isFinite(duration) || duration <= 0 || duration > 90)
+        throw new Error(
+          "Scene audio duration is invalid; no automatic retry was made.",
+        );
+      await sharp(await image(i, 1920))
+        .png()
+        .toFile(png);
+      await exec(
+        "ffmpeg",
+        [
+          "-y",
+          "-loop",
+          "1",
+          "-framerate",
+          "12",
+          "-i",
+          png,
+          "-i",
+          wav,
+          "-t",
+          duration.toFixed(3),
+          "-c:v",
+          "libx264",
+          "-preset",
+          "ultrafast",
+          "-crf",
+          "24",
+          "-threads",
+          "2",
+          "-pix_fmt",
+          "yuv420p",
+          "-c:a",
+          "aac",
+          "-ar",
+          "48000",
+          "-ac",
+          "1",
+          "-b:a",
+          "128k",
+          "-movflags",
+          "+faststart",
+          path.join(dir, `scene-${i}.mp4`),
+        ],
+        { timeout: 180000, maxBuffer: 2_000_000 },
+      );
+      const sourceIds = [
+        ...new Set(
+          segment.claimIds.flatMap((cid) =>
+            story.claims
+              .find((c) => c.id === cid)!
+              .evidence.map((e) => e.sourceId),
+          ),
+        ),
+      ];
+      const words = segment.text.split(/\s+/);
+      for (let j = 0; j < words.length; j += 8) {
+        const end = Math.min(j + 8, words.length);
+        cues.push(
+          `${timestamp(offset + (duration * j) / words.length)} --> ${timestamp(offset + (duration * end) / words.length)}\n${words.slice(j, end).join(" ")}`,
+        );
+      }
+      const clip = await exec("ffprobe", [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "csv=p=0",
+        path.join(dir, `scene-${i}.mp4`),
+      ]);
+      const clipDuration = Number(clip.stdout.trim());
+      if (!Number.isFinite(clipDuration) || clipDuration <= 0)
+        throw new Error("Rendered scene duration is invalid.");
+      scenes.push({
+        segmentId: segment.id,
+        text: segment.text,
+        claimIds: segment.claimIds,
+        sourceIds,
+        assetId: segment.assetId || null,
+        start: offset,
+        end: offset + clipDuration,
+        narrationDuration: duration,
+      });
+      offset += clipDuration;
+    }
+    if (offset < 60 || offset > 90)
+      throw new Error(
+        `Narration is ${offset.toFixed(1)} seconds. Adjust script or pronunciations to reach 60–90 seconds, then render again.`,
+      );
+    if (voiceEvent) {
+      voiceEvent.state = "succeeded";
+      await store!.finishCost(voiceEvent);
+    }
+    await progress("Assembling video, captions and citation manifest");
+    await writeFile(
+      path.join(dir, "concat.txt"),
+      scenes.map((_, i) => `file 'scene-${i}.mp4'`).join("\n"),
+    );
     await exec(
       "ffmpeg",
       [
         "-y",
-        "-loop",
-        "1",
-        "-framerate",
-        "12",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
         "-i",
-        png,
-        "-i",
-        wav,
-        "-t",
-        duration.toFixed(3),
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-crf",
-        "24",
-        "-threads",
-        "2",
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "aac",
-        "-ar",
-        "48000",
-        "-ac",
-        "1",
-        "-b:a",
-        "128k",
+        path.join(dir, "concat.txt"),
+        "-c",
+        "copy",
         "-movflags",
         "+faststart",
-        path.join(dir, `scene-${i}.mp4`),
+        path.join(dir, "video.mp4"),
       ],
-      { timeout: 180000, maxBuffer: 2_000_000 },
+      { timeout: 60000, maxBuffer: 2_000_000 },
     );
-    const sourceIds = [
-      ...new Set(
-        segment.claimIds.flatMap((cid) =>
-          story.claims
-            .find((c) => c.id === cid)!
-            .evidence.map((e) => e.sourceId),
-        ),
-      ),
-    ];
-    const words = segment.text.split(/\s+/);
-    for (let j = 0; j < words.length; j += 8) {
-      const end = Math.min(j + 8, words.length);
-      cues.push(
-        `${timestamp(offset + (duration * j) / words.length)} --> ${timestamp(offset + (duration * end) / words.length)}\n${words.slice(j, end).join(" ")}`,
+    const finalProbe = await exec("ffprobe", [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "csv=p=0",
+      path.join(dir, "video.mp4"),
+    ]);
+    const finalDuration = Number(finalProbe.stdout.trim());
+    if (
+      !Number.isFinite(finalDuration) ||
+      finalDuration < 60 ||
+      finalDuration > 90
+    )
+      throw new Error("Final video duration falls outside 60–90 seconds.");
+    offset = finalDuration;
+    let captionTiming =
+      "Estimated word groups within measured scene audio; review against playback.";
+    let captionWarnings: string[] = [];
+    if (process.env.CAPTIONS_PROVIDER === "assemblyai") {
+      await progress("Aligning captions with AssemblyAI word timestamps");
+      captionEvent = await reserve(
+        store!,
+        story,
+        "assemblyai",
+        "captions",
+        0.1,
+      );
+      const audioFile = path.join(dir, "caption-audio.wav");
+      await exec(
+        "ffmpeg",
+        [
+          "-y",
+          "-i",
+          path.join(dir, "video.mp4"),
+          "-vn",
+          "-ar",
+          "16000",
+          "-ac",
+          "1",
+          audioFile,
+        ],
+        { timeout: 60000 },
+      );
+      const transcript = await assemblyCaptions(
+        store!,
+        captionEvent,
+        await readFile(audioFile),
+      );
+      if (
+        transcript.words.some(
+          (w, i) =>
+            w.end < w.start ||
+            w.end > Math.ceil(offset * 1000) + 2000 ||
+            (i > 0 && w.start < transcript.words[i - 1].start),
+        )
+      )
+        throw new Error("AssemblyAI returned invalid word timings.");
+      cues.length = 0;
+      for (let i = 0; i < transcript.words.length; i += 8) {
+        const group = transcript.words.slice(i, i + 8);
+        cues.push(
+          `${timestamp(group[0].start / 1000)} --> ${timestamp(group.at(-1)!.end / 1000)}\n${group.map((w) => w.text).join(" ")}`,
+        );
+      }
+      captionTiming =
+        "AssemblyAI word timestamps; transcript compared with the script and requires editorial review.";
+      captionWarnings = captionDifferences(
+        story.segments.map((s) => s.text).join(" "),
+        transcript.words,
+      );
+      await writeFile(
+        path.join(dir, "transcript.json"),
+        JSON.stringify({ ...transcript, captionWarnings }, null, 2),
       );
     }
-    scenes.push({
-      segmentId: segment.id,
-      text: segment.text,
-      claimIds: segment.claimIds,
-      sourceIds,
-      assetId: segment.assetId || null,
-      start: offset,
-      end: offset + duration,
-    });
-    offset += duration;
-  }
-  if (offset < 60 || offset > 90)
-    throw new Error(
-      `Narration is ${offset.toFixed(1)} seconds. Adjust script or pronunciations to reach 60–90 seconds, then render again.`,
+    await writeFile(
+      path.join(dir, "captions.vtt"),
+      "WEBVTT\n\n" + cues.join("\n\n") + "\n",
     );
-  await progress("Assembling video, captions and citation manifest");
-  await writeFile(
-    path.join(dir, "concat.txt"),
-    scenes.map((_, i) => `file 'scene-${i}.mp4'`).join("\n"),
-  );
-  await exec(
-    "ffmpeg",
-    [
-      "-y",
-      "-f",
-      "concat",
-      "-safe",
-      "0",
-      "-i",
-      path.join(dir, "concat.txt"),
-      "-c",
-      "copy",
-      "-movflags",
-      "+faststart",
-      path.join(dir, "video.mp4"),
-    ],
-    { timeout: 60000, maxBuffer: 2_000_000 },
-  );
-  await writeFile(
-    path.join(dir, "captions.vtt"),
-    "WEBVTT\n\n" + cues.join("\n\n") + "\n",
-  );
-  const manifest = {
-    storyId: story.id,
-    version: story.version,
-    title: story.title,
-    eventAt: story.eventAt,
-    createdAt: now(),
-    duration: offset,
-    voice:
-      process.env.TTS_PROVIDER === "elevenlabs"
-        ? "ElevenLabs (synthetic)"
-        : "Local development voice (synthetic)",
-    captionTiming:
-      "Estimated word groups within measured scene audio; review against playback.",
-    sourcePage: `${process.env.PUBLIC_BASE_URL || "http://localhost:4310"}/s/${story.id.slice(0, 8)}?v=${story.version}`,
-    scenes,
-    sources: story.sources.map(({ text, ...s }) => s),
-    claims: story.claims,
-    assets: story.assets,
-  };
-  await writeFile(
-    path.join(dir, "manifest.json"),
-    JSON.stringify(manifest, null, 2),
-  );
-  return {
-    version: story.version,
-    card: `${relative}/card.png`,
-    story: `${relative}/story.png`,
-    video: `${relative}/video.mp4`,
-    captions: `${relative}/captions.vtt`,
-    manifest: `${relative}/manifest.json`,
-    duration: offset,
-    createdAt: now(),
-    voice: manifest.voice,
-  };
+    const manifest = {
+      storyId: story.id,
+      version: story.version,
+      title: story.title,
+      eventAt: story.eventAt,
+      createdAt: now(),
+      duration: offset,
+      voice: voiceLabel(),
+      captionTiming,
+      captionWarnings,
+      sourcePage: `${process.env.PUBLIC_BASE_URL || "http://localhost:4310"}/s/${story.id.slice(0, 8)}?v=${story.version}`,
+      scenes,
+      sources: story.sources.map(({ text, ...s }) => s),
+      claims: story.claims,
+      assets: story.assets,
+    };
+    await writeFile(
+      path.join(dir, "manifest.json"),
+      JSON.stringify(manifest, null, 2),
+    );
+    return {
+      version: story.version,
+      card: `${relative}/card.png`,
+      story: `${relative}/story.png`,
+      video: `${relative}/video.mp4`,
+      captions: `${relative}/captions.vtt`,
+      manifest: `${relative}/manifest.json`,
+      duration: offset,
+      createdAt: now(),
+      voice: manifest.voice,
+      captionTiming,
+      captionWarnings,
+    };
+  } catch (error) {
+    for (const event of [voiceEvent, captionEvent])
+      if (event && event.state === "reserved") {
+        event.state = "uncertain";
+        event.note =
+          "Render interrupted. Reservation retained; inspect outputs and provider usage before another revision.";
+        await store!.finishCost(event);
+      }
+    throw error;
+  }
 }

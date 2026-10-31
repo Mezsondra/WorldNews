@@ -15,7 +15,8 @@
     "start": "tsx --env-file-if-exists=.env server/index.ts",
     "worker": "tsx --env-file-if-exists=.env server/worker-entry.ts",
     "demo": "tsx --env-file-if-exists=.env server/demo.ts",
-    "format": "prettier --write src server shared tests"
+    "format": "prettier --write src server shared tests",
+    "pilot": "tsx --env-file-if-exists=.env server/pilot.ts"
   },
   "keywords": [],
   "author": "",

@@ -6,7 +6,7 @@
 
 Use `PUBLIC_BASE_URL` before rendering real exports. It is baked into source overlays and manifests. Changing it requires a new content revision/render so the editor reviews the final URLs. Do not expose the local default HTTP endpoint on the public Internet. Use HTTPS, a long `DASHBOARD_PASSWORD`, and `ALLOWED_HOSTS` at a minimum. A reverse proxy must preserve a permitted Host; Basic authentication is for a small single-editor deployment, not a multi-user newsroom.
 
-No external API secrets are required for the local pipeline. Setting `TTS_PROVIDER=elevenlabs` explicitly enables billable voice requests. Configure the voice's license and `MAX_PAID_CHARACTERS_PER_RENDER` before doing so. The per-render cap is **not a monthly budget**. Monthly/per-story cost ledgers and hard aggregate caps remain before paid continuous production. No job retries a provider call automatically after a worker crash.
+No external API secrets are required for the local-voice pipeline. Claude/Gemini/AssemblyAI integrations are opt-in and reserve against a persistent combined pilot allowance before paid calls; see [API pilot](API_PILOT.md). The approved initial allowance is US$5 of credits/usage excluding the user's existing server. Settings shows reservations and provider records. Failed/uncertain calls retain allowances; restarts do not reset totals. This pilot cap is **not a monthly budget or provider invoice**. Monthly/per-story accounting, provider billing reconciliation, and long-term ceilings remain before continuous paid operation. No job retries a provider call automatically after a worker crash.
 
 ## Backup and restoration procedure
 

@@ -69,6 +69,39 @@ export interface Render {
   duration: number;
   createdAt: string;
   voice: string;
+  captionTiming?: string;
+  captionWarnings?: string[];
+}
+export interface AIReport {
+  id: string;
+  storyId: string;
+  version: number;
+  kind: "research" | "draft";
+  createdAt: string;
+  data: Record<string, unknown>;
+}
+export interface CostEvent {
+  id: string;
+  operationKey: string;
+  storyId: string;
+  provider: string;
+  operation: string;
+  reservedUsd: number;
+  state: "reserved" | "succeeded" | "held" | "uncertain" | "blocked";
+  createdAt: string;
+  usage?: Record<string, unknown>;
+  providerId?: string;
+  note?: string;
+}
+export interface PilotStatus {
+  enabled: boolean;
+  limitUsd: number;
+  reservedUsd: number;
+  remainingUsd: number;
+  events: CostEvent[];
+  providers: { claude: boolean; gemini: boolean; assemblyai: boolean };
+  models: { claude: string; gemini: string };
+  captions: string;
 }
 export interface Approval {
   version: number;
@@ -89,6 +122,7 @@ export interface Story {
   version: number;
   stage: Stage;
   demo: boolean;
+  pilot?: boolean;
   sources: Source[];
   claims: Claim[];
   segments: Segment[];
@@ -124,4 +158,5 @@ export interface Overview {
   voice: string;
   publishing: string;
   gates: Record<string, Gate[]>;
+  pilot?: PilotStatus;
 }

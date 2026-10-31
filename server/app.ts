@@ -5,10 +5,23 @@ import path from "node:path";
 import sharp from "sharp";
 import { z } from "zod";
 import { Store, dataDir } from "./db.js";
-import { gates, id, invalidate, newStory, now } from "./domain.js";
+import {
+  gates,
+  productionGates,
+  id,
+  invalidate,
+  newStory,
+  now,
+} from "./domain.js";
 import { retrieve } from "./fetcher.js";
 import { sourcePage } from "./source-page.js";
 import type { Story, Job } from "../shared/types.js";
+import {
+  claudeAssist,
+  validateDraft,
+  pilotStatus,
+  voiceLabel,
+} from "./providers.js";
 
 const short = z.string().trim().max(500),
   text = z.string().trim().max(5000),
@@ -209,10 +222,8 @@ export function createApp(store: Store) {
       storage: process.env.DATABASE_URL
         ? "PostgreSQL"
         : "SQLite · local development",
-      voice:
-        process.env.TTS_PROVIDER === "elevenlabs"
-          ? "ElevenLabs · paid synthetic voice"
-          : "Local development voice",
+      voice: voiceLabel(),
+      pilot: await pilotStatus(store),
       publishing: "Export only · accounts not connected",
       gates: Object.fromEntries(stories.map((s) => [s.id, gates(s)])),
     });
@@ -233,6 +244,38 @@ export function createApp(store: Store) {
   app.get("/api/stories/:id", async (req, res) =>
     res.json(await get(req.params.id)),
   );
+  app.get("/api/stories/:id/ai-reports", async (req, res) =>
+    res.json(await store.reports(String(req.params.id))),
+  );
+  app.post("/api/stories/:id/assist", async (req, res) => {
+    const input = z
+      .object({
+        version: z.number().int(),
+        kind: z.enum(["research", "draft"]),
+      })
+      .parse(req.body);
+    const old = await get(req.params.id);
+    version(old, input.version);
+    if (["held", "rejected", "producing"].includes(old.stage))
+      fail("Resume research or finish the active render first.", 422);
+    const result = await claudeAssist(store, old, input.kind);
+    const current = await get(old.id);
+    version(current, input.version);
+    if (input.kind === "draft") {
+      const draft = validateDraft(current, result);
+      if (draft.outcome === "draft") {
+        const next = invalidate({
+          ...current,
+          summary: draft.summary,
+          claims: draft.claims.map((c) => ({ ...c, reviewed: false })),
+          segments: draft.segments,
+        });
+        res.json({ story: await replace(current, next), report: result });
+        return;
+      }
+    }
+    res.json({ story: current, report: result });
+  });
   app.put("/api/stories/:id", async (req, res) => {
     const input = edit.parse(req.body),
       old = await get(req.params.id);
@@ -354,7 +397,7 @@ export function createApp(store: Store) {
     const input = z.object({ version: z.number().int() }).parse(req.body);
     const story = await get(req.params.id);
     version(story, input.version);
-    const issues = gates(story);
+    const issues = productionGates(story);
     if (issues.length)
       return res
         .status(422)
@@ -393,6 +436,7 @@ export function createApp(store: Store) {
           .array(z.enum(["Instagram", "YouTube", "X", "TikTok"]))
           .min(1),
         previewChecked: z.literal(true),
+        captionsChecked: z.boolean().optional(),
       })
       .parse(req.body);
     const story = await get(req.params.id);
@@ -401,6 +445,15 @@ export function createApp(store: Store) {
       fail("Resolve editorial checks before approval.", 422);
     if (!story.renders.some((r) => r.version === story.version))
       fail("Render and inspect this exact version first.", 422);
+    if (
+      story.renders.find((r) => r.version === story.version)?.captionWarnings
+        ?.length &&
+      !input.captionsChecked
+    )
+      fail(
+        "Review caption differences and explicitly confirm the caption check before approval.",
+        422,
+      );
     story.approval = {
       version: story.version,
       destinations: [...new Set(input.destinations)],
@@ -510,13 +563,11 @@ export function createApp(store: Store) {
       _next: express.NextFunction,
     ) => {
       if (err instanceof z.ZodError)
-        return res
-          .status(400)
-          .json({
-            error: err.issues
-              .map((i) => `${i.path.join(".")}: ${i.message}`)
-              .join("; "),
-          });
+        return res.status(400).json({
+          error: err.issues
+            .map((i) => `${i.path.join(".")}: ${i.message}`)
+            .join("; "),
+        });
       res
         .status(err.status || 400)
         .json({ error: err.message || "Request failed." });

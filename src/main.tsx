@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import type { Overview, Story, Claim, Source, Segment } from "../shared/types";
 import "./styles.css";
+import { AssistantPanel, PilotPanel } from "./ProviderPanels";
 type Page =
   | "Stories"
   | "Research"
@@ -519,7 +520,9 @@ function App() {
                             <div className="story-content">
                               <div className="row-kicker">
                                 {s.category} <span>·</span> {s.region}{" "}
-                                {s.demo && <em>DEMO</em>}
+                                {s.demo && (
+                                  <em>{s.pilot ? "API PILOT" : "DEMO"}</em>
+                                )}
                               </div>
                               <h3>{s.title}</h3>
                               <p>
@@ -591,7 +594,7 @@ function App() {
                             </span>
                             <p>
                               {currentGates.length
-                                ? `${currentGates.length} editorial checks need attention before production.`
+                                ? `${currentGates.length} editorial checks need attention before approval.`
                                 : "Evidence checks complete. Continue to production and visual review."}
                             </p>
                             <button
@@ -625,7 +628,7 @@ function App() {
                   >
                     {overview.stories.map((s) => (
                       <option key={s.id} value={s.id}>
-                        {s.demo ? "[Demo] " : ""}
+                        {s.pilot ? "[API pilot] " : s.demo ? "[Demo] " : ""}
                         {s.title}
                       </option>
                     ))}
@@ -1017,6 +1020,12 @@ function App() {
                       </section>
                     </div>
                     <aside className="research-inspector">
+                      <AssistantPanel
+                        story={story}
+                        pilot={overview.pilot}
+                        disabled={busy || dirty || !!job}
+                        act={act}
+                      />
                       <SourcePanel
                         story={story}
                         disabled={busy || dirty || !!job}
@@ -1216,10 +1225,14 @@ function App() {
                         </div>
                       </dl>
                       <p className="hint">
-                        The local synthetic voice is for development. Caption
-                        timing is estimated within measured scenes; inspect
-                        playback before approval.
+                        {render?.captionTiming ||
+                          "Synthetic narration and captions require playback review before approval."}
                       </p>
+                      {render?.captionWarnings?.map((warning, i) => (
+                        <p className="render-error" key={i}>
+                          {warning}
+                        </p>
+                      ))}
                       {job ? (
                         <div className="job-progress">
                           <Loader2 className="spin" size={18} />
@@ -1232,7 +1245,10 @@ function App() {
                         <button
                           className="button primary full"
                           disabled={
-                            busy || !!render || currentGates.length > 0 || dirty
+                            busy ||
+                            !!render ||
+                            currentGates.some((g) => g.code !== "review") ||
+                            dirty
                           }
                           onClick={() =>
                             void act(
@@ -1247,7 +1263,7 @@ function App() {
                           <Clapperboard size={17} />
                           {render
                             ? "This revision is rendered"
-                            : "Generate media"}
+                            : "Generate private preview"}
                         </button>
                       )}
                       {lastJob?.status === "failed" && (
@@ -1340,6 +1356,7 @@ function App() {
               )}
               {page === "Settings" && (
                 <div className="settings-grid">
+                  <PilotPanel pilot={overview.pilot} />
                   <section className="editor-section">
                     <div className="eyebrow">OPERATING MODE</div>
                     <h2>A private, manual-first newsroom.</h2>
@@ -1741,8 +1758,10 @@ function Publishing({
 }) {
   const [destinations, setDestinations] = useState<string[]>(["Instagram"]);
   const [checked, setChecked] = useState(false);
+  const [captionsChecked, setCaptionsChecked] = useState(false);
   const [editor, setEditor] = useState("");
   useEffect(() => setChecked(false), [story.id, story.version]);
+  useEffect(() => setCaptionsChecked(false), [story.id, story.version]);
   const render = story.renders.find((r) => r.version === story.version);
   return (
     <div className="publishing-layout">
@@ -1869,6 +1888,24 @@ function Publishing({
                 video, including captions and source overlays.
               </span>
             </label>
+            {!!render?.captionWarnings?.length && (
+              <>
+                <p className="render-error">
+                  {render.captionWarnings.join(" ")}
+                </p>
+                <label className="review-check">
+                  <input
+                    type="checkbox"
+                    checked={captionsChecked}
+                    onChange={(e) => setCaptionsChecked(e.target.checked)}
+                  />
+                  <span>
+                    I compared the recognized captions with the narration and
+                    evidence, including every name and number.
+                  </span>
+                </label>
+              </>
+            )}
             <button
               className="button primary full"
               disabled={
@@ -1877,7 +1914,8 @@ function Publishing({
                 gates > 0 ||
                 !checked ||
                 editor.trim().length < 2 ||
-                !destinations.length
+                !destinations.length ||
+                (!!render?.captionWarnings?.length && !captionsChecked)
               }
               onClick={() =>
                 void act(
@@ -1887,6 +1925,7 @@ function Publishing({
                       editor,
                       destinations,
                       previewChecked: true,
+                      captionsChecked,
                     }),
                   "Exact revision approved for export. No social post was made.",
                 )

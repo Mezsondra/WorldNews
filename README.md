@@ -2,6 +2,8 @@
 
 A working local implementation of the immediate target in [the build plan](World_News_Bot_Build_Plan.md): one manually selected story through sources, evidence, narration, a breaking card, vertical video, and a matching source page. A responsive TypeScript dashboard operates the workflow. No social account is connected and nothing posts automatically.
 
+The next local phase adds Claude source analysis and structured drafts, Gemini narration, AssemblyAI word-timed captions, and a persistent combined pilot allowance. See [API pilot setup and controls](docs/API_PILOT.md). Live calls are opt-in; tests use mocked providers.
+
 ## Run locally
 
 Requires Node **24.13+**, npm, FFmpeg/ffprobe, and either macOS `say` or Linux `espeak-ng`. The installed local Node 25 and FFmpeg were used for verification.
@@ -28,6 +30,8 @@ Local SQLite and generated media live under ignored `data/`. Credentials are unn
 7. Edits revoke approval, cancel old queued jobs, reset evidence checks, and require fresh media. **Corrections** adds a permanent log and a new revision. Previously approved source records preserve their content with the latest correction log.
 
 The supplied local demo was rendered during development and left **awaiting review**, with a 60.7-second H.264/AAC video. It is historical material from October 2024, not current news. Generated files are intentionally untracked.
+
+With the configured APIs, Research → Editorial assistant can analyze attached sources and create a new script revision. Generated claims remain unchecked. Private previews can precede claim review, but all structural evidence/media checks still apply and every factual claim must be reviewed before export approval. Caption differences detected after transcription require a separate explicit check.
 
 ## Editorial checks
 
@@ -58,6 +62,6 @@ npm test
 npm run build
 ```
 
-The workflow tests exercise editorial gates, source lineage, stale passages, translation requirements, unlicensed assets, escaping, private-network rejection, optimistic concurrency, SQLite persistence, job uniqueness, expired worker leases, HTTP approval, correction records, and cancellation on material edits. An optional PostgreSQL integration test runs only with `TEST_DATABASE_URL` pointing to a **disposable empty database**. Browser QA used the Codex in-app browser. Full ten-story editorial evaluation, live-provider testing, container execution, and platform upload pilots remain release gates.
+The workflow tests exercise editorial gates, source lineage, stale passages, translation requirements, unlicensed assets, escaping, private-network rejection, optimistic concurrency, SQLite persistence, job uniqueness, expired worker leases, HTTP approval, correction records, and cancellation on material edits. Provider tests cover bounded requests, source-passage validation, cumulative allowance persistence, concurrent allocations, duplicate/failed requests, word timing, and caption drift. An optional PostgreSQL integration test runs only with `TEST_DATABASE_URL` pointing to a **disposable empty database**. All 34 checks passed with that integration enabled. Browser QA used the Codex in-app browser, and a live three-provider smoke test produced a 74.248-second historical preview. Full ten-story editorial evaluation, broader provider evaluation, container execution, and platform upload pilots remain release gates.
 
 See [implementation status](docs/IMPLEMENTATION_STATUS.md) for completed work, plan deviations, and the remaining milestones.

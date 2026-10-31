@@ -338,6 +338,7 @@ test("HTTP workflow: guards, exact approval, public snapshot, edits, and correct
       duration: 65,
       voice: "Test",
       createdAt: now(),
+      captionWarnings: ["Recognized number differs from script."],
     });
     await store.save(s, 1);
     assert.equal(
@@ -347,6 +348,18 @@ test("HTTP workflow: guards, exact approval, public snapshot, edits, and correct
           editor: "Test Editor",
           destinations: ["Instagram"],
           previewChecked: true,
+        })
+      ).status,
+      422,
+    );
+    assert.equal(
+      (
+        await call(`/api/stories/${story.id}/approve`, "POST", {
+          version: 1,
+          editor: "Test Editor",
+          destinations: ["Instagram"],
+          previewChecked: true,
+          captionsChecked: true,
         })
       ).status,
       200,
@@ -460,7 +473,31 @@ test(
         (await store.jobs()).find((j) => j.id === job.id)!.status,
         "cancelled",
       );
+      await store.query(
+        "UPDATE pilot_budget SET limit_micros=200000,reserved_micros=0 WHERE id=?",
+        ["pilot"],
+      );
+      const reservations = await Promise.allSettled(
+        Array.from({ length: 3 }, (_, i) =>
+          store.reserveCost({
+            id: id(),
+            operationKey: `${story.id}:${i}`,
+            storyId: story.id,
+            provider: "claude",
+            operation: "test",
+            reservedUsd: 0.1,
+            state: "reserved",
+            createdAt: now(),
+          }),
+        ),
+      );
+      assert.equal(
+        reservations.filter((r) => r.status === "fulfilled").length,
+        2,
+      );
+      assert.equal((await store.budget()).reservedUsd, 0.2);
     } finally {
+      await store.query("DELETE FROM cost_events WHERE story_id=?", [story.id]);
       await store.query("DELETE FROM jobs WHERE story_id=?", [story.id]);
       await store.query("DELETE FROM versions WHERE story_id=?", [story.id]);
       await store.query("DELETE FROM stories WHERE id=?", [story.id]);

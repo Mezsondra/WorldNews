@@ -2,7 +2,13 @@ import { DatabaseSync } from "node:sqlite";
 import { Pool, type PoolClient } from "pg";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import type { Story, Job, Settings } from "../shared/types.js";
+import type {
+  Story,
+  Job,
+  Settings,
+  CostEvent,
+  AIReport,
+} from "../shared/types.js";
 
 export const dataDir = path.resolve(process.env.DATA_DIR || "data");
 mkdirSync(dataDir, { recursive: true });
@@ -48,6 +54,9 @@ export class Store {
         "CREATE TABLE IF NOT EXISTS settings (id TEXT PRIMARY KEY, body TEXT NOT NULL)",
         "CREATE TABLE IF NOT EXISTS approved_snapshots (story_id TEXT NOT NULL, version INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(story_id,version))",
         "CREATE TABLE IF NOT EXISTS audit (id TEXT PRIMARY KEY, at TEXT NOT NULL, action TEXT NOT NULL, body TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS pilot_budget (id TEXT PRIMARY KEY, limit_micros BIGINT NOT NULL, reserved_micros BIGINT NOT NULL DEFAULT 0)",
+        "CREATE TABLE IF NOT EXISTS cost_events (id TEXT PRIMARY KEY, operation_key TEXT NOT NULL UNIQUE, story_id TEXT NOT NULL, body TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS ai_reports (id TEXT PRIMARY KEY, story_id TEXT NOT NULL, body TEXT NOT NULL)",
       ])
         await this.query(sql, [], migrationClient);
       try {
@@ -68,6 +77,21 @@ export class Store {
         ["global", JSON.stringify({ paused: true })],
         migrationClient,
       );
+      const ceiling = Number(process.env.PILOT_BUDGET_USD || 0);
+      if (!Number.isFinite(ceiling) || ceiling < 0 || ceiling > 100)
+        throw new Error("PILOT_BUDGET_USD must be between 0 and 100.");
+      await this.query(
+        "INSERT INTO pilot_budget(id,limit_micros,reserved_micros) VALUES(?,?,0) ON CONFLICT(id) DO NOTHING",
+        ["pilot", Math.floor(ceiling * 1_000_000)],
+        migrationClient,
+      );
+      // A previously disabled, unused pilot can be initialized; consumed budgets never reset on restart.
+      if (ceiling > 0)
+        await this.query(
+          "UPDATE pilot_budget SET limit_micros=? WHERE id=? AND limit_micros=0 AND reserved_micros=0",
+          [Math.floor(ceiling * 1_000_000), "pilot"],
+          migrationClient,
+        );
     } finally {
       if (migrationClient) {
         await migrationClient.query("SELECT pg_advisory_unlock(776631001)");
@@ -216,5 +240,83 @@ export class Store {
   async close() {
     this.sqlite?.close();
     await this.pool?.end();
+  }
+  async budget() {
+    const row = (
+      await this.query(
+        "SELECT limit_micros,reserved_micros FROM pilot_budget WHERE id=?",
+        ["pilot"],
+      )
+    )[0];
+    return {
+      limitUsd: Number(row.limit_micros) / 1_000_000,
+      reservedUsd: Number(row.reserved_micros) / 1_000_000,
+      remainingUsd:
+        Math.max(0, Number(row.limit_micros) - Number(row.reserved_micros)) /
+        1_000_000,
+    };
+  }
+  async costs(): Promise<CostEvent[]> {
+    return (await this.query("SELECT body FROM cost_events"))
+      .map((r) => JSON.parse(r.body))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  async reserveCost(event: CostEvent) {
+    if (
+      !Number.isFinite(event.reservedUsd) ||
+      event.reservedUsd <= 0 ||
+      !Number.isSafeInteger(Math.ceil(event.reservedUsd * 1_000_000))
+    )
+      throw new Error("A reservation must be a finite positive amount.");
+    // Unique insertion happens before any paid request. Duplicate operations cannot spend again.
+    try {
+      await this.query(
+        "INSERT INTO cost_events(id,operation_key,story_id,body) VALUES(?,?,?,?)",
+        [event.id, event.operationKey, event.storyId, JSON.stringify(event)],
+      );
+    } catch {
+      throw Object.assign(
+        new Error(
+          "This operation was already attempted for this revision. Inspect its usage record before creating a new revision to retry.",
+        ),
+        { status: 409 },
+      );
+    }
+    const amount = Math.ceil(event.reservedUsd * 1_000_000);
+    const rows = await this.query(
+      "UPDATE pilot_budget SET reserved_micros=reserved_micros+? WHERE id=? AND reserved_micros+?<=limit_micros RETURNING id",
+      [amount, "pilot", amount],
+    );
+    if (!rows.length) {
+      event.state = "blocked";
+      event.note = "Pilot ceiling reached; no provider request sent.";
+      await this.finishCost(event);
+      throw Object.assign(
+        new Error("Pilot API ceiling reached. No paid request was sent."),
+        { status: 402 },
+      );
+    }
+  }
+  async finishCost(event: CostEvent) {
+    await this.query("UPDATE cost_events SET body=? WHERE id=?", [
+      JSON.stringify(event),
+      event.id,
+    ]);
+  }
+  async addReport(report: AIReport) {
+    await this.query("INSERT INTO ai_reports(id,story_id,body) VALUES(?,?,?)", [
+      report.id,
+      report.storyId,
+      JSON.stringify(report),
+    ]);
+  }
+  async reports(storyId: string): Promise<AIReport[]> {
+    return (
+      await this.query("SELECT body FROM ai_reports WHERE story_id=?", [
+        storyId,
+      ])
+    )
+      .map((r) => JSON.parse(r.body))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 }

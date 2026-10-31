@@ -41,6 +41,9 @@ export function invalidate(story: Story): Story {
     claims: story.claims.map((c) => ({ ...c, reviewed: false })),
   };
 }
+export function productionGates(story: Story) {
+  return gates(story).filter((g) => g.code !== "review");
+}
 export function gates(story: Story): Gate[] {
   const issues: Gate[] = [];
   const add = (code: string, message: string) => issues.push({ code, message });

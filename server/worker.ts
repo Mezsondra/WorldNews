@@ -1,6 +1,6 @@
 import type { Job } from "../shared/types.js";
 import { Store } from "./db.js";
-import { gates, now } from "./domain.js";
+import { productionGates, now } from "./domain.js";
 import { renderStory } from "./media.js";
 export function startWorker(store: Store) {
   let busy = false,
@@ -40,16 +40,20 @@ export function startWorker(store: Store) {
         const story = await store.get(job.storyId);
         if (!story || story.version !== job.version)
           throw new Error("Content version changed; render cancelled.");
-        const issues = gates(story);
+        const issues = productionGates(story);
         if (issues.length) throw new Error(issues[0].message);
-        const result = await renderStory(story, async (progress) => {
-          const active = (await store.jobs()).find((j) => j.id === job.id);
-          if (active?.status === "cancelled")
-            throw new Error("Render cancelled after a content edit.");
-          job.progress = progress;
-          job.lease = Date.now() + 120000;
-          await store.updateJob(job);
-        });
+        const result = await renderStory(
+          story,
+          async (progress) => {
+            const active = (await store.jobs()).find((j) => j.id === job.id);
+            if (active?.status === "cancelled")
+              throw new Error("Render cancelled after a content edit.");
+            job.progress = progress;
+            job.lease = Date.now() + 120000;
+            await store.updateJob(job);
+          },
+          store,
+        );
         const latest = await store.get(story.id);
         if (!latest || latest.version !== story.version)
           throw new Error(
