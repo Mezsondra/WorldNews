@@ -2274,3 +2274,89 @@ dd {
   color: var(--muted);
   font-size: 11px;
 }
+.discovery {
+  margin-top: 40px;
+  padding-top: 25px;
+  border-top: 1px solid var(--line);
+}
+.lead {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+.lead h3 {
+  font-family: Georgia, serif;
+  font-size: 17px;
+  line-height: 1.35;
+  font-weight: 400;
+  margin: 7px 0;
+  color: #374930;
+}
+.lead summary,
+.feeds summary {
+  font-size: 11px;
+  color: #557342;
+  cursor: pointer;
+}
+.lead ul {
+  margin: 8px 0;
+  padding-left: 16px;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.lead a {
+  color: #4b5f42;
+}
+.lead-update {
+  font-size: 11px;
+  color: #67844e;
+  margin: 0 0 6px;
+}
+.lead-warning {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: #a47e63;
+  margin: 6px 0 0;
+}
+.lead-actions {
+  display: flex;
+  gap: 18px;
+  margin-top: 6px;
+}
+.feeds {
+  margin-top: 22px;
+}
+.feed-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+.feed-row small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  margin-top: 2px;
+}
+.feed-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.feed-form input {
+  flex: 1 1 140px;
+}
+.starter-feeds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.starter-feeds .badge {
+  gap: 4px;
+  cursor: pointer;
+  text-transform: none;
+}

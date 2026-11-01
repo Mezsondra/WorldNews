@@ -10,6 +10,8 @@ import type {
   AIReport,
   ResearchRun,
   Source,
+  Feed,
+  FeedItem,
 } from "../shared/types.js";
 
 export const dataDir = path.resolve(process.env.DATA_DIR || "data");
@@ -62,6 +64,8 @@ export class Store {
         "CREATE TABLE IF NOT EXISTS research_runs (id TEXT PRIMARY KEY, story_id TEXT NOT NULL, status TEXT NOT NULL, lease BIGINT NOT NULL DEFAULT 0, body TEXT NOT NULL)",
         "CREATE UNIQUE INDEX IF NOT EXISTS one_active_research ON research_runs(story_id) WHERE status IN ('queued','running')",
         "CREATE TABLE IF NOT EXISTS research_sources (run_id TEXT NOT NULL, source_id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(run_id,source_id))",
+        "CREATE TABLE IF NOT EXISTS feeds (url TEXT PRIMARY KEY, polled_at BIGINT NOT NULL DEFAULT 0, body TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS feed_items (id TEXT PRIMARY KEY, url TEXT NOT NULL UNIQUE, feed_url TEXT NOT NULL, seen_at TEXT NOT NULL, dismissed INTEGER NOT NULL DEFAULT 0, body TEXT NOT NULL)",
       ])
         await this.query(sql, [], migrationClient);
       try {
@@ -427,5 +431,63 @@ export class Store {
       "UPDATE research_runs SET status=?,lease=?,body=? WHERE id=? AND status IN ('queued','running')",
       [run.status, run.lease, JSON.stringify(run), run.id],
     );
+  }
+  async feeds(): Promise<(Feed & { polledAt: number })[]> {
+    return (await this.query("SELECT body,polled_at FROM feeds"))
+      .map((r) => ({ ...JSON.parse(r.body), polledAt: Number(r.polled_at) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+  async addFeed(feed: Feed) {
+    const rows = await this.query(
+      "INSERT INTO feeds(url,polled_at,body) VALUES(?,0,?) ON CONFLICT(url) DO NOTHING RETURNING url",
+      [feed.url, JSON.stringify(feed)],
+    );
+    if (!rows.length)
+      throw Object.assign(new Error("This feed is already registered."), {
+        status: 409,
+      });
+  }
+  async removeFeed(url: string) {
+    await this.query("DELETE FROM feeds WHERE url=?", [url]);
+    await this.query("DELETE FROM feed_items WHERE feed_url=?", [url]);
+  }
+  // Conditional claim: only one process polls a feed per interval.
+  async claimFeed(url: string, previous: number, at: number) {
+    return (
+      (
+        await this.query(
+          "UPDATE feeds SET polled_at=? WHERE url=? AND polled_at=? RETURNING url",
+          [at, url, previous],
+        )
+      ).length > 0
+    );
+  }
+  async updateFeed({ polledAt: _, ...feed }: Feed & { polledAt?: number }) {
+    await this.query("UPDATE feeds SET body=? WHERE url=?", [
+      JSON.stringify(feed),
+      feed.url,
+    ]);
+  }
+  async addFeedItems(feedUrl: string, items: FeedItem[]) {
+    for (const item of items)
+      await this.query(
+        "INSERT INTO feed_items(id,url,feed_url,seen_at,body) VALUES(?,?,?,?,?) ON CONFLICT(url) DO NOTHING",
+        [item.id, item.url, feedUrl, item.seenAt, JSON.stringify(item)],
+      );
+  }
+  async feedItems(since: string): Promise<FeedItem[]> {
+    return (
+      await this.query(
+        "SELECT body FROM feed_items WHERE dismissed=0 AND seen_at>=?",
+        [since],
+      )
+    ).map((r) => JSON.parse(r.body));
+  }
+  async dismissFeedItems(ids: string[]) {
+    for (const id of ids)
+      await this.query("UPDATE feed_items SET dismissed=1 WHERE id=?", [id]);
+  }
+  async pruneFeedItems(before: string) {
+    await this.query("DELETE FROM feed_items WHERE seen_at<?", [before]);
   }
 }

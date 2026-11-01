@@ -13,7 +13,8 @@ import {
   newStory,
   now,
 } from "./domain.js";
-import { retrieve } from "./fetcher.js";
+import { retrieve, validateUrl } from "./fetcher.js";
+import { discovery } from "./discovery.js";
 import { queueResearch } from "./research.js";
 import { queueAutomaticVideo } from "./automation.js";
 import { sourcePage } from "./source-page.js";
@@ -682,6 +683,32 @@ export function createApp(store: Store) {
   app.get("/api/stories/:id/history", async (req, res) =>
     res.json(await store.history(String(req.params.id))),
   );
+  app.get("/api/discovery", async (_req, res) =>
+    res.json(await discovery(store)),
+  );
+  app.post("/api/feeds", async (req, res) => {
+    const input = z
+      .object({ url: z.string().url().max(2048), name: short.min(1).max(80) })
+      .parse(req.body);
+    const feed = { ...input, url: validateUrl(input.url).href, addedAt: now() };
+    await store.addFeed(feed);
+    await store.audit("feed-added", feed);
+    res.status(201).json(feed);
+  });
+  app.delete("/api/feeds", async (req, res) => {
+    const input = z.object({ url: z.string().max(2048) }).parse(req.body);
+    await store.removeFeed(input.url);
+    await store.audit("feed-removed", input);
+    res.json(input);
+  });
+  app.post("/api/discovery/dismiss", async (req, res) => {
+    const input = z
+      .object({ itemIds: z.array(identifier).min(1).max(200) })
+      .parse(req.body);
+    await store.dismissFeedItems(input.itemIds);
+    await store.audit("leads-dismissed", input);
+    res.json(input);
+  });
   app.post("/api/settings", async (req, res) => {
     const input = z.object({ paused: z.boolean() }).parse(req.body);
     await store.setSettings(input);

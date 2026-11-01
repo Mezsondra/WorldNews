@@ -210,3 +210,34 @@ export interface Overview {
   pilot?: PilotStatus;
   researchRuns?: ResearchRun[];
 }
+export interface Feed {
+  url: string;
+  name: string;
+  addedAt: string;
+  lastPolledAt?: string;
+  error?: string;
+  itemCount?: number;
+}
+export interface FeedItem {
+  id: string;
+  url: string;
+  title: string;
+  summary: string;
+  publishedAt: string;
+  seenAt: string;
+  feed: string;
+}
+export interface Lead {
+  id: string;
+  title: string;
+  items: FeedItem[];
+  feeds: number;
+  latestAt: string;
+  warnings: string[];
+  story?: { id: string; title: string; newItems: number };
+}
+export interface Discovery {
+  feeds: Feed[];
+  leads: Lead[];
+  pollMinutes: number;
+}

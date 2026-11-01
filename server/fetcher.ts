@@ -40,9 +40,10 @@ export function validateUrl(value: string) {
     throw new Error("Private network sources are blocked.");
   return url;
 }
+type Kind = "page" | "image" | "feed";
 async function request(
   url: URL,
-  image = false,
+  kind: Kind = "page",
 ): Promise<{
   status: number;
   location?: string;
@@ -70,9 +71,11 @@ async function request(
         headers: {
           "User-Agent":
             "WorldNewsResearch/0.3 (https://github.com/Mezsondra/WorldNews; editorial source retrieval)",
-          Accept: image
-            ? "image/jpeg,image/png,image/webp"
-            : "text/html,text/plain",
+          Accept: {
+            page: "text/html,text/plain",
+            image: "image/jpeg,image/png,image/webp",
+            feed: "application/rss+xml,application/atom+xml,application/xml,text/xml",
+          }[kind],
           "Accept-Encoding": "identity",
         },
         lookup: ((_host: unknown, _options: unknown, callback: Function) =>
@@ -97,20 +100,23 @@ async function request(
           return;
         }
         if (
-          !(
-            image
-              ? /^image\/(jpeg|png|webp)(;|$)/i
-              : /text\/(html|plain)|application\/xhtml\+xml/
-          ).test(res.headers["content-type"] || "")
+          !{
+            page: /text\/(html|plain)|application\/xhtml\+xml/,
+            image: /^image\/(jpeg|png|webp)(;|$)/i,
+            feed: /xml/i,
+          }[kind].test(res.headers["content-type"] || "")
         ) {
           res.resume();
           reject(
             new Error(
-              "Use an HTML or plain-text source; PDFs need manual extraction.",
+              kind === "feed"
+                ? "Feed URL did not return RSS/Atom XML."
+                : "Use an HTML or plain-text source; PDFs need manual extraction.",
             ),
           );
           return;
         }
+        const image = kind === "image";
         let bytes = 0;
         const chunks: Buffer[] = [];
         res.on("data", (chunk: Buffer) => {
@@ -160,7 +166,7 @@ export function validateWikimediaImageUrl(value: string) {
   return url;
 }
 export async function retrieveWikimediaImage(value: string) {
-  const result = await request(validateWikimediaImageUrl(value), true);
+  const result = await request(validateWikimediaImageUrl(value), "image");
   if (result.location || !result.bytes)
     throw new Error("Media redirect or empty image rejected.");
   return result.bytes;
@@ -205,32 +211,43 @@ export function robotsAllows(
   }
   return best ? best[0] : true;
 }
-const robotsCache = new Map<string, Promise<string>>();
-async function robotsFor(origin: string) {
-  let url = validateUrl(`${origin}/robots.txt`);
+const robotsCache = new Map<string, { at: number; body: Promise<string> }>();
+async function follow(value: string, kind: Kind = "page") {
+  let url = validateUrl(value);
   for (let i = 0; i < 5; i++) {
-    const r = await request(url);
-    if (!r.location) return r.body;
+    const r = await request(url, kind);
+    if (!r.location) return { url, body: r.body };
     url = validateUrl(new URL(r.location, url).href);
   }
-  return "";
+  throw new Error("Too many source redirects.");
 }
-// Automated research respects robots.txt; editor-requested retrieval does not.
-export async function retrieveAutomated(value: string): Promise<Source> {
+async function assertRobots(value: string) {
   const url = validateUrl(value);
-  if (!robotsCache.has(url.origin))
-    // ponytail: unreachable/missing robots.txt counts as allowed, and the cache lives for the process; add expiry if research runs continuously
-    robotsCache.set(
-      url.origin,
-      robotsFor(url.origin).catch(() => ""),
-    );
-  if (
-    !robotsAllows(await robotsCache.get(url.origin)!, url.pathname + url.search)
-  )
+  let cached = robotsCache.get(url.origin);
+  if (!cached || cached.at < Date.now() - 86_400_000) {
+    // ponytail: an unreachable or missing robots.txt counts as allowed
+    cached = {
+      at: Date.now(),
+      body: follow(`${url.origin}/robots.txt`).then(
+        (r) => r.body,
+        () => "",
+      ),
+    };
+    robotsCache.set(url.origin, cached);
+  }
+  if (!robotsAllows(await cached.body, url.pathname + url.search))
     throw new Error(
       "The site's robots.txt disallows automated retrieval of this page.",
     );
+}
+// Automated research and feed polling respect robots.txt; editor-requested retrieval does not.
+export async function retrieveAutomated(value: string): Promise<Source> {
+  await assertRobots(value);
   return retrieve(value);
+}
+export async function retrieveFeed(value: string) {
+  await assertRobots(value);
+  return (await follow(value, "feed")).body;
 }
 export async function retrieve(value: string): Promise<Source> {
   let url = validateUrl(value),

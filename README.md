@@ -23,6 +23,10 @@ Open **http://127.0.0.1:4310**. `npm run demo` fetches three real NASA source pa
 
 Local SQLite and generated media live under ignored `data/`. Credentials are unnecessary for the local voice and database. Optional configuration is described in [.env.example](.env.example). For frontend development, run `npm run dev` and `npm run ui` in separate terminals; Vite uses port 5173. For production-like local preview, use `npm run build` and `npm start`.
 
+## Find stories from feeds
+
+**Stories → Leads from feeds** polls the RSS/Atom feeds you register (a suggested starter list is one click away) every 15 minutes, respecting each site's robots.txt. Headlines from the last 72 hours are grouped, ranked by how many feeds carry them, and flagged as possible updates when they match an open story. Several feeds can repeat one original report, so a lead is never treated as corroboration. **Open dossier** pre-fills the new-story form; research spending still needs your choice. Set `DISCOVERY_POLL_MINUTES` (minimum 5) to change the interval.
+
 ## Use the workflow
 
 1. **Stories:** open a dossier with a topic or a public HTML source URL. Topic entry starts manual research; it does not pretend to run an automatic search.
@@ -61,7 +65,7 @@ The dashboard listens on loopback by default. Non-loopback Node hosting requires
 
 ## Verification
 
-The suite has **61 tests**, including the disposable PostgreSQL checks, plus TypeScript/Vite build validation. The Poland dossier produced a **35.469971-second** 1080×1920 H.264/AAC private preview from three eligible findings, with no additional API reservation. FFmpeg decoded the output without errors and browser QA confirmed the video loads.
+The suite has **64 tests**, including the disposable PostgreSQL checks, plus TypeScript/Vite build validation. The Poland dossier produced a **35.469971-second** 1080×1920 H.264/AAC private preview from three eligible findings, with no additional API reservation. FFmpeg decoded the output without errors and browser QA confirmed the video loads.
 
 ```sh
 npm test

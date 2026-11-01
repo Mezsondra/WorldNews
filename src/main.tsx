@@ -27,7 +27,6 @@ import {
   RefreshCw,
   ImagePlus,
   Save,
-  Radio,
   BookOpen,
 } from "lucide-react";
 import type { Overview, Story, Claim, Source, Segment } from "../shared/types";
@@ -38,6 +37,7 @@ import {
   ResearchBotPanel,
   AutomationPanel,
 } from "./ProviderPanels";
+import { DiscoveryPanel } from "./DiscoveryPanel";
 type Page =
   | "Stories"
   | "Research"
@@ -87,6 +87,7 @@ function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [newOpen, setNewOpen] = useState(false);
+  const [prefill, setPrefill] = useState({ title: "", url: "" });
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("All stories");
   const [preview, setPreview] = useState("Card");
@@ -138,7 +139,10 @@ function App() {
     return () => clearTimeout(timer);
   }, [notice]);
   useEffect(() => {
-    if (!newOpen) return;
+    if (!newOpen) {
+      setPrefill({ title: "", url: "" });
+      return;
+    }
     const key = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !busy) setNewOpen(false);
       if (event.key === "Tab") {
@@ -572,12 +576,17 @@ function App() {
                           </button>
                         </div>
                       )}
-                      <div className="queue-foot">
-                        <span>
-                          <Radio size={13} /> Manual discovery
-                        </span>
-                        <span>Feed polling is a later milestone</span>
-                      </div>
+                      <DiscoveryPanel
+                        act={act}
+                        open={(title, url) => {
+                          if (dirty)
+                            return setError(
+                              "Save your changes before opening another story.",
+                            );
+                          setPrefill({ title: title.slice(0, 140), url });
+                          setNewOpen(true);
+                        }}
+                      />
                       <div className="editor-note">
                         <div className="eyebrow">DESK NOTE</div>
                         <h3>A source is a starting point.</h3>
@@ -1587,12 +1596,18 @@ function App() {
                   required
                   maxLength={140}
                   placeholder="A development worth understanding"
+                  defaultValue={prefill.title}
                   autoFocus
                 />
               </label>
               <label>
                 Source URL <span className="optional">optional</span>
-                <input name="url" type="url" placeholder="https://…" />
+                <input
+                  name="url"
+                  type="url"
+                  placeholder="https://…"
+                  defaultValue={prefill.url}
+                />
               </label>
               <p className="hint">
                 Research retrieves public HTML/text pages. Inaccessible pages
