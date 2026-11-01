@@ -13,6 +13,7 @@ import type {
   Feed,
   FeedItem,
 } from "../shared/types.js";
+import { actualUsd } from "./pricing.js";
 
 export const dataDir = path.resolve(process.env.DATA_DIR || "data");
 mkdirSync(dataDir, { recursive: true });
@@ -81,6 +82,19 @@ export class Store {
           migrationClient,
         );
       }
+      try {
+        await this.query(
+          "SELECT settled FROM cost_events LIMIT 1",
+          [],
+          migrationClient,
+        );
+      } catch {
+        await this.query(
+          "ALTER TABLE cost_events ADD COLUMN settled INTEGER NOT NULL DEFAULT 0",
+          [],
+          migrationClient,
+        );
+      }
       await this.query(
         "INSERT INTO settings(id,body) VALUES(?,?) ON CONFLICT(id) DO NOTHING",
         ["global", JSON.stringify({ paused: true })],
@@ -107,6 +121,10 @@ export class Store {
         migrationClient.release();
       }
     }
+    // Settle calls that finished before cost settlement existed.
+    for (const event of await this.costs())
+      if (["succeeded", "held"].includes(event.state) && !event.actualUsd)
+        await this.finishCost(event);
   }
   async list(): Promise<Story[]> {
     return (await this.query("SELECT body,revision FROM stories"))
@@ -306,11 +324,39 @@ export class Store {
       );
     }
   }
+  // A finished call is priced from its recorded usage; the reservation then
+  // reflects actual spend. Unpriceable or uncertain calls keep their reservation.
   async finishCost(event: CostEvent) {
+    const settle =
+      ["succeeded", "held"].includes(event.state) &&
+      event.actualUsd === undefined;
+    const actual = settle ? actualUsd(event) : undefined;
+    if (actual !== undefined)
+      event.actualUsd = Math.ceil(actual * 1_000_000) / 1_000_000;
     await this.query("UPDATE cost_events SET body=? WHERE id=?", [
       JSON.stringify(event),
       event.id,
     ]);
+    if (actual === undefined) return;
+    // Mark first: a crash can leave the reservation counted, never release it twice.
+    const marked = await this.query(
+      "UPDATE cost_events SET settled=1 WHERE id=? AND settled=0 RETURNING id",
+      [event.id],
+    );
+    if (!marked.length) return;
+    // Negative releases unused allowance; positive records spend beyond the reservation.
+    const delta =
+      Math.round(event.actualUsd! * 1_000_000) -
+      Math.ceil(event.reservedUsd * 1_000_000);
+    await this.query(
+      "UPDATE pilot_budget SET reserved_micros=reserved_micros+? WHERE id=? AND reserved_micros+?>=0",
+      [delta, "pilot", delta],
+    );
+    await this.audit("cost-settled", {
+      eventId: event.id,
+      reservedUsd: event.reservedUsd,
+      actualUsd: event.actualUsd,
+    });
   }
   async reconcileGoogleRejection(eventId: string, httpStatus: 400 | 500) {
     const event = (await this.costs()).find((e) => e.id === eventId);

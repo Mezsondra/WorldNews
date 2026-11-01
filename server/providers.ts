@@ -10,9 +10,16 @@ import { Store } from "./db.js";
 import { id, now } from "./domain.js";
 
 export type Fetcher = typeof fetch;
-export const CLAUDE_MODEL = "claude-sonnet-4-6";
-export const GEMINI_MODEL = "gemini-3.8-flash-tts";
-export const GEMINI_VERIFICATION_MODEL = "gemini-3.8-flash";
+export {
+  CLAUDE_MODEL,
+  GEMINI_MODEL,
+  GEMINI_VERIFICATION_MODEL,
+} from "./pricing.js";
+import {
+  CLAUDE_MODEL,
+  GEMINI_MODEL,
+  GEMINI_VERIFICATION_MODEL,
+} from "./pricing.js";
 export const voiceLabel = (provider = process.env.TTS_PROVIDER) =>
   provider === "gemini"
     ? "Gemini · synthetic voice"

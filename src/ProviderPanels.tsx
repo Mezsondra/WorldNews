@@ -502,7 +502,7 @@ export function PilotPanel({ pilot }: { pilot?: PilotStatus }) {
           <strong>US${pilot.limitUsd.toFixed(2)}</strong>
         </div>
         <div>
-          <small>RESERVED</small>
+          <small>COUNTED</small>
           <strong>US${pilot.reservedUsd.toFixed(2)}</strong>
         </div>
         <div>
@@ -512,10 +512,11 @@ export function PilotPanel({ pilot }: { pilot?: PilotStatus }) {
       </div>
       <p className="hint">
         <ShieldCheck size={14} />
-        Reservations are conservative usage allowances, not invoices. They count
-        credit usage and stay held after timeout or uncertain failure. Inspected
-        Google rejections documented as unbilled can be reconciled once. The
-        total persists across restarts. Hosting is excluded.
+        Each call reserves an allowance first. When it finishes, its cost is
+        estimated from recorded tokens at list prices and the unused part is
+        released. Uncertain or interrupted calls keep their full reservation.
+        Estimates are not invoices; check provider billing. The total persists
+        across restarts. Hosting is excluded.
       </p>
       <div className="usage-events">
         {pilot.events.slice(0, 12).map((event) => (
@@ -531,7 +532,11 @@ export function PilotPanel({ pilot }: { pilot?: PilotStatus }) {
               {event.note && <p>{event.note}</p>}
             </div>
             <span className="badge">{event.state}</span>
-            <span>US${event.reservedUsd.toFixed(2)}</span>
+            <span title={`Reserved US$${event.reservedUsd.toFixed(2)}`}>
+              {event.actualUsd !== undefined
+                ? `US$${event.actualUsd.toFixed(3)}`
+                : `US$${event.reservedUsd.toFixed(2)} held`}
+            </span>
           </div>
         ))}
       </div>

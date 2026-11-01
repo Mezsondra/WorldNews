@@ -109,6 +109,7 @@ export interface CostEvent {
   providerId?: string;
   note?: string;
   researchRunId?: string;
+  actualUsd?: number;
 }
 export interface PilotStatus {
   enabled: boolean;
