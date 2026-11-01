@@ -8,7 +8,11 @@ import { get as httpGet } from "node:http";
 import { Store } from "../server/db.js";
 import { newStory, gates, invalidate, id, now } from "../server/domain.js";
 import { createApp } from "../server/app.js";
-import { isPublicAddress, validateUrl } from "../server/fetcher.js";
+import {
+  isPublicAddress,
+  robotsAllows,
+  validateUrl,
+} from "../server/fetcher.js";
 import { frame } from "../server/media.js";
 import { sourcePage } from "../server/source-page.js";
 import { startWorker } from "../server/worker.js";
@@ -145,6 +149,34 @@ test("material edits invalidate exact-version approval and every claim review", 
   assert.equal(next.version, 2);
   assert.equal(next.approval, undefined);
   assert(next.claims.every((c) => !c.reviewed));
+});
+test("robots.txt: named group overrides *, longest rule wins, Allow wins ties", () => {
+  const robots = `# comment
+User-agent: *
+Disallow: /private
+Allow: /private/press
+Disallow: /*.pdf$
+
+User-agent: OtherBot
+User-agent: WorldNewsResearch
+Disallow: /
+Allow: /news/
+`;
+  assert.equal(robotsAllows(robots, "/news/a", "otherbot"), true);
+  assert.equal(robotsAllows(robots, "/about", "otherbot"), false);
+  assert.equal(robotsAllows(robots, "/news/a"), true);
+  assert.equal(robotsAllows(robots, "/about"), false);
+  const star = robots.split("\n\n")[0];
+  assert.equal(robotsAllows(star, "/private/x"), false);
+  assert.equal(robotsAllows(star, "/private/press/1"), true);
+  assert.equal(robotsAllows(star, "/doc.pdf"), false);
+  assert.equal(robotsAllows(star, "/doc.pdf?x"), true);
+  assert.equal(robotsAllows(star, "/"), true);
+  assert.equal(robotsAllows("", "/anything"), true);
+  assert.equal(
+    robotsAllows("User-agent: *\nDisallow: /a\nAllow: /a", "/a"),
+    true,
+  );
 });
 test("fetcher rejects private, link-local, mapped, reserved, and non-HTTP addresses", () => {
   for (const address of [

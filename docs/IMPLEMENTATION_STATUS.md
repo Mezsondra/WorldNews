@@ -25,8 +25,8 @@ The [story research bot](WEB_RESEARCH.md) now searches the web, retrieves public
 | System            | Current state                                                           | Before enabling                                                                                          |
 | ----------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | NASA source pages | Manual HTML retrieval works                                             | Curated feed registry, per-source terms, polling allowances, diverse regions and viewpoints              |
-| Media             | Text cards by default; uploaded-image metadata required                 | Editor verifies license, creator, event context and restrictions; no automatic photo search              |
-| Models/search     | Claude/Gemini/AssemblyAI pilot connected                                | Broader editorial evaluation, web discovery, monthly usage ceilings and billing reconciliation           |
+| Media             | Text cards by default; uploaded-image metadata required                 | Commons photo discovery for private previews; editor verifies license, creator, event context              |
+| Models/search     | Claude/Gemini/AssemblyAI pilot connected                                | Broader editorial evaluation, continuous feed discovery, monthly usage ceilings and billing reconciliation           |
 | Speech            | Local voice and Gemini narration work; AssemblyAI word timings verified | Final licensed narrator choice, pronunciation evaluation and broader caption review                      |
 | Instagram         | No account connected                                                    | Professional account, login route and permissions, current limits, reviewed live publication             |
 | YouTube           | Export only                                                             | OAuth/project access, actual private-upload behavior, metadata and disclosures                           |

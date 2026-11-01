@@ -61,13 +61,13 @@ The dashboard listens on loopback by default. Non-loopback Node hosting requires
 
 ## Verification
 
-The current research/automatic-production update passed **55 tests**, including the disposable PostgreSQL checks, plus TypeScript/Vite build validation. The Poland dossier produced a **35.469971-second** 1080×1920 H.264/AAC private preview from three eligible findings, with no additional API reservation. FFmpeg decoded the output without errors and browser QA confirmed the video loads.
+The suite has **61 tests**, including the disposable PostgreSQL checks, plus TypeScript/Vite build validation. The Poland dossier produced a **35.469971-second** 1080×1920 H.264/AAC private preview from three eligible findings, with no additional API reservation. FFmpeg decoded the output without errors and browser QA confirmed the video loads.
 
 ```sh
 npm test
 npm run build
 ```
 
-The workflow tests exercise editorial gates, source lineage, stale passages, translation requirements, unlicensed assets, escaping, private-network rejection, optimistic concurrency, SQLite persistence, job uniqueness, expired worker leases, HTTP approval, correction records, and cancellation on material edits. Provider tests cover bounded requests, source-passage validation, cumulative allowance persistence, concurrent allocations, duplicate/failed requests, word timing, and caption drift. An optional PostgreSQL integration test runs only with `TEST_DATABASE_URL` pointing to a **disposable empty database**. All 34 checks passed with that integration enabled. Browser QA used the Codex in-app browser, and a live three-provider smoke test produced a 74.248-second historical preview. Full ten-story editorial evaluation, broader provider evaluation, container execution, and platform upload pilots remain release gates.
+The workflow tests exercise editorial gates, source lineage, stale passages, translation requirements, unlicensed assets, escaping, private-network rejection, robots.txt rules for automated research, optimistic concurrency, SQLite persistence, job uniqueness, expired worker leases, HTTP approval, correction records, and cancellation on material edits. Provider tests cover bounded requests, source-passage validation, cumulative allowance persistence, concurrent allocations, duplicate/failed requests, word timing, and caption drift. An optional PostgreSQL integration test runs only with `TEST_DATABASE_URL` pointing to a **disposable empty database**. Browser QA used the Codex in-app browser, and a live three-provider smoke test produced a 74.248-second historical preview. Full ten-story editorial evaluation, broader provider evaluation, container execution, and platform upload pilots remain release gates.
 
 See [implementation status](docs/IMPLEMENTATION_STATUS.md) for completed work, plan deviations, and the remaining milestones.

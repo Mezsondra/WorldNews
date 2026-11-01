@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { Claim, ResearchRun, Source, Story } from "../shared/types.js";
 import { Store } from "./db.js";
 import { id, invalidate, now } from "./domain.js";
-import { retrieve, validateUrl } from "./fetcher.js";
+import { retrieveAutomated, validateUrl } from "./fetcher.js";
 import {
   CLAUDE_MODEL,
   GEMINI_VERIFICATION_MODEL,
@@ -416,7 +416,7 @@ export async function runResearch(
   store: Store,
   run: ResearchRun,
   request: Fetcher = fetch,
-  fetchSource: (url: string) => Promise<Source> = retrieve,
+  fetchSource: (url: string) => Promise<Source> = retrieveAutomated,
 ) {
   let event: Awaited<ReturnType<typeof reserve>> | undefined;
   const progress = async (text: string) => {

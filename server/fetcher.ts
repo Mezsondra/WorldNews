@@ -165,6 +165,73 @@ export async function retrieveWikimediaImage(value: string) {
     throw new Error("Media redirect or empty image rejected.");
   return result.bytes;
 }
+// RFC 9309: our group if named, else "*"; longest matching rule wins, Allow wins ties.
+export function robotsAllows(
+  robots: string,
+  path: string,
+  agent = "worldnewsresearch",
+) {
+  const groups: { agents: string[]; rules: [boolean, string][] }[] = [];
+  let open = false;
+  for (const raw of robots.split(/\r?\n/)) {
+    const [key, ...rest] = raw.replace(/#.*/, "").split(":");
+    const field = key.trim().toLowerCase(),
+      value = rest.join(":").trim();
+    if (field === "user-agent") {
+      if (!open) groups.push({ agents: [], rules: [] });
+      groups.at(-1)!.agents.push(value.toLowerCase());
+      open = true;
+    } else if ((field === "allow" || field === "disallow") && groups.length) {
+      open = false;
+      if (value) groups.at(-1)!.rules.push([field === "allow", value]);
+    }
+  }
+  const pick = (match: (a: string) => boolean) =>
+    groups.filter((g) => g.agents.some(match)).flatMap((g) => g.rules);
+  const named = pick((a) => a !== "*" && agent.includes(a));
+  const rules = named.length ? named : pick((a) => a === "*");
+  let best: [boolean, string] | undefined;
+  for (const rule of rules) {
+    const pattern = rule[1]
+      .replace(/[.+?^{}()|[\]\\]/g, "\\$&")
+      .replace(/\*/g, ".*");
+    if (!new RegExp(`^${pattern}`).test(path)) continue;
+    if (
+      !best ||
+      rule[1].length > best[1].length ||
+      (rule[1].length === best[1].length && rule[0])
+    )
+      best = rule;
+  }
+  return best ? best[0] : true;
+}
+const robotsCache = new Map<string, Promise<string>>();
+async function robotsFor(origin: string) {
+  let url = validateUrl(`${origin}/robots.txt`);
+  for (let i = 0; i < 5; i++) {
+    const r = await request(url);
+    if (!r.location) return r.body;
+    url = validateUrl(new URL(r.location, url).href);
+  }
+  return "";
+}
+// Automated research respects robots.txt; editor-requested retrieval does not.
+export async function retrieveAutomated(value: string): Promise<Source> {
+  const url = validateUrl(value);
+  if (!robotsCache.has(url.origin))
+    // ponytail: unreachable/missing robots.txt counts as allowed, and the cache lives for the process; add expiry if research runs continuously
+    robotsCache.set(
+      url.origin,
+      robotsFor(url.origin).catch(() => ""),
+    );
+  if (
+    !robotsAllows(await robotsCache.get(url.origin)!, url.pathname + url.search)
+  )
+    throw new Error(
+      "The site's robots.txt disallows automated retrieval of this page.",
+    );
+  return retrieve(value);
+}
 export async function retrieve(value: string): Promise<Source> {
   let url = validateUrl(value),
     html = "";

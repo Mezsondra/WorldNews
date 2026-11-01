@@ -2,7 +2,6 @@
   "name": "worldnews",
   "version": "1.0.0",
   "description": "A manual-first, source-linked world news production desk",
-  "main": "index.js",
   "directories": {
     "doc": "docs",
     "test": "tests"
