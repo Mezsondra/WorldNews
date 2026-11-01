@@ -1,4 +1,4 @@
-import type { Job, Story, Claim } from "../shared/types.js";
+import type { Job, Story, Claim, Source } from "../shared/types.js";
 import { Store } from "./db.js";
 import { discoverVisuals, attachDiscoveredVisuals } from "./media-discovery.js";
 import {
@@ -10,6 +10,18 @@ import {
   wordCount,
 } from "./domain.js";
 
+// "Federal Bureau of Investigation" is named by its full name or its initials, "FBI".
+export function namesSource(text: string, publisher: string) {
+  const initials = publisher
+    .split(/\s+/)
+    .filter((w) => /^\p{Lu}/u.test(w))
+    .map((w) => w[0])
+    .join("");
+  return (
+    text.toLowerCase().includes(publisher.toLowerCase()) ||
+    (initials.length >= 2 && new RegExp(`\\b${initials}\\b`).test(text))
+  );
+}
 export function automaticScript(story: Story) {
   if (story.eventAt && Number.isNaN(Date.parse(story.eventAt)))
     throw new Error(
@@ -33,16 +45,23 @@ export function automaticScript(story: Story) {
   let words = 0;
   const segments = [];
   for (const claim of eligible) {
-    const publishers = [
-      ...new Set(
-        claim.evidence
-          .filter((e) => e.relation === "supports")
-          .map((e) => story.sources.find((s) => s.id === e.sourceId)?.publisher)
-          .filter((p): p is string => !!p),
-      ),
-    ].slice(0, 2);
-    // Copy the checked finding verbatim; add only its recorded publisher attribution.
-    const text = `Reporting from ${publishers.join(" and ")}: ${claim.text}`;
+    const supporting = claim.evidence
+      .filter((e) => e.relation === "supports")
+      .map((e) => story.sources.find((s) => s.id === e.sourceId))
+      .filter((s): s is Source => !!s);
+    const publishers = [...new Set(supporting.map((s) => s.publisher))].slice(
+      0,
+      2,
+    );
+    const speaker = supporting.find((s) => s.kind === "primary")?.publisher;
+    // Copy the checked finding verbatim; add only its recorded attribution.
+    // An attributed statement that already names its original source reads as "The FBI said…".
+    const text =
+      claim.status === "attributed statement" && speaker
+        ? namesSource(claim.text, speaker)
+          ? claim.text
+          : `According to ${speaker}, ${claim.text}`
+        : `Reporting from ${publishers.join(" and ")}: ${claim.text}`;
     const count = text.split(/\s+/).length;
     if (words + count > 185) continue;
     words += count;

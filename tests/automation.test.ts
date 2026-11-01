@@ -10,6 +10,7 @@ import {
   wordCount,
 } from "../server/domain.js";
 import {
+  namesSource,
   automaticScript,
   prepareAutomaticVideo,
   queueAutomaticVideo,
@@ -235,4 +236,50 @@ test("a private automatic render cannot be approved even after editorial checks 
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await store.close();
   }
+});
+
+test("automatic narration lets a self-attributed primary statement speak for itself", () => {
+  assert.ok(
+    namesSource("The FBI said it observed…", "Federal Bureau of Investigation"),
+  );
+  assert.ok(
+    namesSource(
+      "The Federal Bureau of Investigation said…",
+      "Federal Bureau of Investigation",
+    ),
+  );
+  assert.ok(
+    !namesSource(
+      "North Korea was responsible.",
+      "Federal Bureau of Investigation",
+    ),
+  );
+  assert.ok(
+    !namesSource("The FBIS archive…", "Federal Bureau of Investigation"),
+  );
+  const story = fixture();
+  story.sources[0] = {
+    ...story.sources[0],
+    publisher: "Federal Bureau of Investigation",
+    kind: "primary",
+  };
+  const named =
+    "The FBI said the agency announced a new programme that will involve researchers working at its science centre and reviewing the timetable for the next phase of the work.";
+  const unnamed =
+    "The agency announced that the centre will review its timetable before it proceeds with the next stage of the announced programme, as described in its statement.";
+  story.claims = [named, unnamed].map((text) => ({
+    id: id(),
+    text,
+    status: "attributed statement",
+    reviewed: false,
+    evidence: [
+      { sourceId: "S0", passage: story.sources[0].text, relation: "supports" },
+    ],
+  }));
+  const texts = automaticScript(story).segments.map((s) => s.text);
+  assert.equal(texts[0], named);
+  assert.equal(
+    texts[1],
+    `According to Federal Bureau of Investigation, ${unnamed}`,
+  );
 });
