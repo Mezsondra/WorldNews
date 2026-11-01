@@ -1,5 +1,7 @@
 # Automatic private video production
 
+The pipeline now includes [related-photo discovery](AUTOMATIC_VISUALS.md), assigning reusable archive images before rendering. Discovered photo identity and license review can wait for a private preview; it remains mandatory for final production.
+
 New dossiers default to **Automatically prepare a script and private video after research**. The backend accepts `autoProduce: false` to opt out. Existing stories can use **Research → Automatic production → Make video automatically** (`POST /api/stories/:id/automate` with the current `version`).
 
 The durable render worker now schedules preparation after research finishes, saves a script checkpoint, then queues rendering. No additional button is needed between research, script preparation and the private video. Source discovery still uses the configured API allowance; preparation and automatic media use no API credits. `npm start` runs both workers unless `WORKER_INLINE=false`.

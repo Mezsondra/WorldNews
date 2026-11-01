@@ -42,7 +42,13 @@ export function validateUrl(value: string) {
 }
 async function request(
   url: URL,
-): Promise<{ status: number; location?: string; body: string }> {
+  image = false,
+): Promise<{
+  status: number;
+  location?: string;
+  body: string;
+  bytes?: Buffer;
+}> {
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
   let timer: ReturnType<typeof setTimeout> | undefined;
   const addresses = await Promise.race([
@@ -63,8 +69,10 @@ async function request(
       {
         headers: {
           "User-Agent":
-            "WorldNewsResearch/0.1 (editor-requested source retrieval)",
-          Accept: "text/html,text/plain",
+            "WorldNewsResearch/0.3 (https://github.com/Mezsondra/WorldNews; editorial source retrieval)",
+          Accept: image
+            ? "image/jpeg,image/png,image/webp"
+            : "text/html,text/plain",
           "Accept-Encoding": "identity",
         },
         lookup: ((_host: unknown, _options: unknown, callback: Function) =>
@@ -89,9 +97,11 @@ async function request(
           return;
         }
         if (
-          !/text\/(html|plain)|application\/xhtml\+xml/.test(
-            res.headers["content-type"] || "",
-          )
+          !(
+            image
+              ? /^image\/(jpeg|png|webp)(;|$)/i
+              : /text\/(html|plain)|application\/xhtml\+xml/
+          ).test(res.headers["content-type"] || "")
         ) {
           res.resume();
           reject(
@@ -105,8 +115,14 @@ async function request(
         const chunks: Buffer[] = [];
         res.on("data", (chunk: Buffer) => {
           bytes += chunk.length;
-          if (bytes > 2_000_000) {
-            req.destroy(new Error("Source exceeds the 2 MB retrieval limit."));
+          if (bytes > (image ? 8_000_000 : 2_000_000)) {
+            req.destroy(
+              new Error(
+                image
+                  ? "Image exceeds the 8 MB retrieval limit."
+                  : "Source exceeds the 2 MB retrieval limit.",
+              ),
+            );
             return;
           }
           chunks.push(chunk);
@@ -114,7 +130,8 @@ async function request(
         res.on("end", () =>
           resolve({
             status: 200,
-            body: Buffer.concat(chunks).toString("utf8"),
+            body: image ? "" : Buffer.concat(chunks).toString("utf8"),
+            ...(image ? { bytes: Buffer.concat(chunks) } : {}),
           }),
         );
         res.on("error", reject);
@@ -127,6 +144,26 @@ async function request(
     req.on("close", () => clearTimeout(deadline));
     req.on("error", reject);
   });
+}
+export function validateWikimediaImageUrl(value: string) {
+  const url = validateUrl(value);
+  if (
+    url.protocol !== "https:" ||
+    !["upload.wikimedia.org", "thumb.wikimedia.org"].includes(url.hostname) ||
+    !url.pathname.startsWith("/wikipedia/commons/")
+  )
+    throw new Error(
+      "Automatic media downloads must use Wikimedia's HTTPS image servers.",
+    );
+  url.search = "";
+  url.hash = "";
+  return url;
+}
+export async function retrieveWikimediaImage(value: string) {
+  const result = await request(validateWikimediaImageUrl(value), true);
+  if (result.location || !result.bytes)
+    throw new Error("Media redirect or empty image rejected.");
+  return result.bytes;
 }
 export async function retrieve(value: string): Promise<Source> {
   let url = validateUrl(value),

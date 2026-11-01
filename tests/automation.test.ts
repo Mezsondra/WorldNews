@@ -17,6 +17,7 @@ import {
 } from "../server/automation.js";
 import { createApp } from "../server/app.js";
 import type { Story } from "../shared/types.js";
+process.env.MEDIA_DISCOVERY_ENABLED = "false";
 
 function fixture(): Story {
   const story = newStory("Agency programme update");
@@ -152,7 +153,7 @@ test("durable automatic production waits for research and schedules each checkpo
     assert.equal((await store.budget()).reservedUsd, 0);
     const latest = (await store.get(story.id))!;
     assert.equal(latest.automation?.state, "rendering");
-    assert.equal((await store.reports(story.id))[0].kind, "draft");
+    assert((await store.reports(story.id)).some((r) => r.kind === "draft"));
     const stale = structuredClone(latest);
     stale.version = 1;
     await assert.rejects(() => prepareAutomaticVideo(store, stale), /changed/);

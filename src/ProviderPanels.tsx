@@ -45,8 +45,9 @@ export function AutomationPanel({
         <Clapperboard size={18} />
       </div>
       <p className="hint">
-        Research → source-linked script → narrated private video. Local
-        narration and estimated captions use no extra API credit.
+        Research → source-linked script → related archive photos → narrated
+        private video. Local narration and estimated captions use no extra API
+        credit.
       </p>
       {flow && (
         <p role="status">
@@ -140,11 +141,13 @@ export function AssistantPanel({
     ["queued", "running"].includes(r.status),
   );
   const label = (kind: AIReport["kind"]) =>
-    kind === "verification"
-      ? "Web research & evidence check"
-      : kind === "research"
-        ? "Attached source analysis"
-        : "Draft result";
+    kind === "visuals"
+      ? "Visual research"
+      : kind === "verification"
+        ? "Web research & evidence check"
+        : kind === "research"
+          ? "Attached source analysis"
+          : "Draft result";
   return (
     <section className="editor-section assistant-panel">
       <div className="section-title">

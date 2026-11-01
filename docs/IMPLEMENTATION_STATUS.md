@@ -1,5 +1,7 @@
 # Build plan execution — 31 October 2026
 
+Update, 1 November 2026: [automatic related-photo discovery](AUTOMATIC_VISUALS.md) now runs between narration preparation and private rendering. The Poland preview includes two credited, archive-labelled Commons photographs. The media adapter currently retrieves raster photos; automatic event-video footage retrieval remains unimplemented. Sixty tests, including disposable PostgreSQL checks, and the production build passed. No additional AI allowance was reserved.
+
 The original plan identifies **milestone B** as the immediate implementation target. This repository implements that local workflow and the supporting editorial controls. The full continuously running multi-platform product remains staged work.
 
 Automatic private production now follows research with a persisted, source-linked extractive script and local narrated video. Existing stories can enable it explicitly. Brief updates avoid padding limited evidence. Private previews defer human metadata/date checks while retaining factual gates, and cannot be approved as final media. See [workflow and limits](AUTOMATIC_PRODUCTION.md).

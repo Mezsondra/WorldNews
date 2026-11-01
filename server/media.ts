@@ -112,26 +112,27 @@ export function frame(
   const dateLabel =
     "Source dates: " +
     sourceDates.slice(0, 2).join(" · ") +
-    (sourceDates.length > 2 ? " · more on source page" : "");
+    (sourceDates.length > 2 ? ` · +${sourceDates.length - 2}` : "");
   const date = story.eventAt
     ? new Date(story.eventAt).toISOString().slice(0, 10)
     : "Date pending";
   const card = height === 1350;
   const asset = story.assets.find((a) => a.id === segment?.assetId);
-  let titleSize = story.title.length > 105 ? 64 : 78;
+  const photo = !!background;
+  let titleSize = photo ? (card ? 56 : 64) : story.title.length > 105 ? 64 : 78;
   while (
     titleSize > 38 &&
     lines(story.title, Math.floor(920 / (titleSize * 0.55))).length *
       titleSize *
       1.13 >
-      340
+      (photo ? 220 : 340)
   )
     titleSize -= 2;
   const body = card
     ? (story.summary || segment?.text || "Evidence-led reporting").slice(0, 220)
     : segment?.text || "";
-  let bodySize = card ? 31 : 40;
-  const bodyHeight = card ? 200 : 550;
+  let bodySize = photo ? 28 : card ? 31 : 40;
+  const bodyHeight = photo ? (card ? 130 : 180) : card ? 200 : 550;
   while (
     bodySize > 22 &&
     lines(body, Math.floor(900 / (bodySize * 0.55))).length * bodySize * 1.4 >
@@ -140,17 +141,18 @@ export function frame(
     bodySize -= 1;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="${height}" viewBox="0 0 1080 ${height}">
     <rect width="1080" height="${height}" fill="#152a26"/>
-    ${background ? `<image href="data:image/png;base64,${background}" x="0" y="280" width="1080" height="${height - 280}" preserveAspectRatio="xMidYMid slice"/><rect y="280" width="1080" height="${height - 280}" fill="#10231f" opacity=".86"/>` : ""}
+    ${background ? `<image href="data:image/png;base64,${background}" x="80" y="${card ? 440 : 650}" width="920" height="${card ? 390 : 560}" preserveAspectRatio="xMidYMid slice"/>` : ""}
     <path d="M80 170h920" stroke="#657970" stroke-width="2"/>
     ${svgText("WORLD NEWS", 80, 125, 34, 40, "#eff1e6")}${svgText(story.demo ? "ARCHIVE / DEMO" : "EDITORIAL DRAFT", 690, 125, 21, 35, "#b7cf9a")}
     ${svgText(story.category.toUpperCase() + "   /   " + date, 80, 260, 23, 50, "#b7cf9a")}
-    ${svgText(story.title, 80, card ? 390 : 405, titleSize, Math.floor(920 / (titleSize * 0.55)), "#f3f1e8", "serif", 1.13)}
-    <path d="M80 ${card ? 760 : 850}h95" stroke="#bed897" stroke-width="6"/>
-    ${svgText(body, 80, card ? 845 : 950, bodySize, Math.floor(900 / (bodySize * 0.55)), "#d9e0d2", "sans-serif", 1.4)}
+    ${svgText(story.title, 80, photo ? (card ? 305 : 365) : card ? 390 : 405, titleSize, Math.floor(920 / (titleSize * 0.55)), "#f3f1e8", "serif", 1.13)}
+    <path d="M80 ${photo ? (card ? 855 : 1265) : card ? 760 : 850}h95" stroke="#bed897" stroke-width="6"/>
+    ${svgText(body, 80, photo ? (card ? 900 : 1320) : card ? 845 : 950, bodySize, Math.floor(900 / (bodySize * 0.55)), "#d9e0d2", "sans-serif", 1.4)}
     ${svgText(publisherLabel, 80, height - 300, 34, 48, "#c8d8b8")}
     ${svgText(dateLabel, 80, height - 245, 30, 53, "#aabbac")}
-    ${asset ? svgText((asset.archive ? "ARCHIVE · " : "") + asset.creator.slice(0, 40) + " · " + asset.eventDate + " · " + asset.location.slice(0, 30), 80, height - 360, 18, 75, "#b7c8a6") : ""}
-    ${svgText((process.env.PUBLIC_BASE_URL || "http://localhost:4310").replace(/^https?:\/\//, "") + "/s/" + story.id.slice(0, 8) + "?v=" + story.version, 80, height - 190, 30, 53, "#e5ebdd")}
+    ${asset ? svgText((asset.archive ? "ARCHIVE PHOTO · " : "PHOTO · ") + asset.eventDate + " · " + asset.location.slice(0, 40), 80, photo ? (card ? 420 : 625) : height - 390, 21, 85, "#b7c8a6") : ""}
+    ${asset ? svgText(asset.creator + " · " + asset.permission, 80, card ? 1020 : 1555, 17, 110, "#b7c8a6") : ""}
+    ${svgText((process.env.PUBLIC_BASE_URL || "http://localhost:4310").replace(/^https?:\/\//, "") + "/s/" + story.id.slice(0, 8) + "?v=" + story.version, 80, height - 190, 24, 70, "#e5ebdd")}
     ${svgText(story.demo ? "HISTORICAL SAMPLE · NOT CURRENT NEWS" : privatePreview ? "PRIVATE PREVIEW · EDITORIAL REVIEW PENDING" : "DRAFT · EDITORIAL APPROVAL REQUIRED", 80, height - 115, 22, 70, "#adc594")}
     ${!card ? svgText(String(segmentIndex + 1).padStart(2, "0") + " / " + String(story.segments.length).padStart(2, "0"), 850, height - 115, 22, 15, "#adc594") : ""}
   </svg>`;

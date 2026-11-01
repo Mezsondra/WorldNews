@@ -278,6 +278,60 @@ export function createApp(store: Store) {
     version(story, input.version);
     res.status(202).json(await queueAutomaticVideo(store, story));
   });
+  app.post("/api/stories/:id/visuals", async (req, res) => {
+    const input = z
+      .object({ version: z.number().int().positive() })
+      .parse(req.body);
+    const story = await get(req.params.id);
+    version(story, input.version);
+    if (["held", "rejected", "approved", "producing"].includes(story.stage))
+      fail("Resume an editable story before replacing its media.", 422);
+    if (!story.segments.length)
+      fail("Prepare a narration script before assigning scene photos.", 422);
+    const active = (await store.jobs()).find(
+      (j) => j.storyId === story.id && ["queued", "running"].includes(j.status),
+    );
+    if (active) return res.status(202).json(active);
+    const job: Job = {
+      id: id(),
+      storyId: story.id,
+      version: story.version,
+      kind: "media",
+      privatePreview: true,
+      status: "queued",
+      progress: "Finding credited archive/context photos",
+      attempts: 0,
+      lease: 0,
+      createdAt: now(),
+    };
+    await store.addJob(job);
+    res.status(202).json(job);
+  });
+  app.patch("/api/stories/:id/assets/:assetId/review", async (req, res) => {
+    const input = z
+      .object({
+        version: z.number().int().positive(),
+        reviewed: z.literal(true),
+      })
+      .parse(req.body);
+    const story = await get(req.params.id);
+    version(story, input.version);
+    if (!story.assets.some((a) => a.id === req.params.assetId && a.discovery))
+      fail("Discovered image not found.", 404);
+    res.json(
+      await replace(
+        story,
+        invalidate({
+          ...story,
+          assets: story.assets.map((a) =>
+            a.id === req.params.assetId && a.discovery
+              ? { ...a, discovery: { ...a.discovery, reviewed: true } }
+              : a,
+          ),
+        }),
+      ),
+    );
+  });
   app.post("/api/stories/:id/research", async (req, res) => {
     const input = z
       .object({

@@ -2150,6 +2150,34 @@ function AssetPanel({
   const [imageError, setImageError] = useState("");
   return (
     <section className="editor-section">
+      <div className="section-title">
+        <h2>Related photos</h2>
+        <ImagePlus size={18} />
+      </div>
+      <p className="hint">
+        Automatically find reusable Commons photographs, record credits and
+        dates, and rebuild the private preview. Archive context images are
+        labelled and require review.
+      </p>
+      <button
+        className="button"
+        disabled={
+          disabled ||
+          !story.segments.length ||
+          ["held", "rejected", "approved"].includes(story.stage)
+        }
+        onClick={() =>
+          void act(
+            () =>
+              api(`/stories/${story.id}/visuals`, "POST", {
+                version: story.version,
+              }),
+            "Photo discovery queued. The private video will rebuild automatically.",
+          )
+        }
+      >
+        Find related photos & rebuild preview
+      </button>
       <details>
         <summary className="asset-summary">
           <ImagePlus size={18} />
@@ -2258,6 +2286,50 @@ function AssetPanel({
             <small>
               {a.permission} · {a.archive ? "Archive" : "Event image"}
             </small>
+            {a.discovery && (
+              <>
+                <small>
+                  {a.eventDate} · {a.location}
+                </small>
+                <p>
+                  <a
+                    href={a.discovery.sourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Original file & attribution
+                  </a>{" "}
+                  ·{" "}
+                  <a
+                    href={a.discovery.licenseUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    License
+                  </a>
+                </p>
+                <small>{a.discovery.changes}</small>
+                {!a.discovery.reviewed && (
+                  <button
+                    className="button"
+                    disabled={disabled}
+                    onClick={() =>
+                      void act(
+                        () =>
+                          api(
+                            `/stories/${story.id}/assets/${a.id}/review`,
+                            "PATCH",
+                            { version: story.version, reviewed: true },
+                          ),
+                        "Image identity, context and reuse review recorded in a new revision.",
+                      )
+                    }
+                  >
+                    Confirm image identity, context & reuse rights
+                  </button>
+                )}
+              </>
+            )}
           </div>
         </div>
       ))}

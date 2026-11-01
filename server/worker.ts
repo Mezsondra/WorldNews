@@ -6,6 +6,7 @@ import {
   scheduleAutomaticVideos,
 } from "./automation.js";
 import { renderStory } from "./media.js";
+import { addVisualsAndRebuild } from "./media-discovery.js";
 export function startWorker(store: Store) {
   let busy = false,
     stopped = false;
@@ -45,6 +46,13 @@ export function startWorker(store: Store) {
         const story = await store.get(job.storyId);
         if (!story || story.version !== job.version)
           throw new Error("Content version changed; render cancelled.");
+        if (job.kind === "media") {
+          await addVisualsAndRebuild(store, story);
+          job.status = "succeeded";
+          job.progress =
+            "Related photos saved; video rebuild follows automatically";
+          return;
+        }
         if (job.kind === "prepare") {
           await prepareAutomaticVideo(store, story);
           job.status = "succeeded";

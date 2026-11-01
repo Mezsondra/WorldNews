@@ -59,6 +59,18 @@ export interface Asset {
   location: string;
   archive: boolean;
   context: string;
+  discovery?: {
+    provider: "wikimedia";
+    pageId: number;
+    title: string;
+    sourceUrl: string;
+    licenseUrl: string;
+    downloadUrl: string;
+    hash: string;
+    retrievedAt: string;
+    changes: string;
+    reviewed: boolean;
+  };
 }
 export interface Render {
   version: number;
@@ -79,7 +91,7 @@ export interface AIReport {
   id: string;
   storyId: string;
   version: number;
-  kind: "research" | "draft" | "verification";
+  kind: "research" | "draft" | "verification" | "visuals";
   createdAt: string;
   data: Record<string, unknown>;
 }
@@ -154,7 +166,7 @@ export interface Job {
   lease: number;
   error?: string;
   createdAt: string;
-  kind?: "prepare" | "render";
+  kind?: "prepare" | "render" | "media";
   privatePreview?: boolean;
 }
 export interface ResearchRun {

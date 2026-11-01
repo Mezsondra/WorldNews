@@ -1,5 +1,6 @@
 import type { Job, Story, Claim } from "../shared/types.js";
 import { Store } from "./db.js";
+import { discoverVisuals, attachDiscoveredVisuals } from "./media-discovery.js";
 import {
   gates,
   id,
@@ -221,7 +222,9 @@ export async function scheduleAutomaticVideos(store: Store) {
 }
 
 export async function prepareAutomaticVideo(store: Store, input: Story) {
-  const next = automaticScript(input);
+  const script = automaticScript(input);
+  const photos = await discoverVisuals(script);
+  const next = attachDiscoveredVisuals(script, photos);
   await store.snapshot(input);
   await store.save(next, input.version);
   await store.addReport({
@@ -237,6 +240,19 @@ export async function prepareAutomaticVideo(store: Store, input: Story) {
       method: "source-linked extractive script",
       words: wordCount(next),
       warnings: next.automation!.warnings,
+    },
+  });
+  await store.addReport({
+    id: id(),
+    storyId: input.id,
+    version: next.version,
+    kind: "visuals",
+    createdAt: now(),
+    data: {
+      summary: `${photos.assets.length} reusable archive/context photo(s) found.`,
+      query: photos.query,
+      candidates: photos.candidates,
+      cautions: photos.warnings,
     },
   });
   await store.audit("automatic-script-prepared", {

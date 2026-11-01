@@ -49,7 +49,7 @@ export function previewGates(story: Story) {
   // Factual support, contradictions, citations, translations and media rights cannot.
   return gates(story).filter(
     (g) =>
-      !["review", "provenance"].includes(g.code) &&
+      !["review", "provenance", "media-review"].includes(g.code) &&
       !(g.code === "date" && !story.eventAt),
   );
 }
@@ -145,6 +145,11 @@ export function gates(story: Story): Gate[] {
     }
     if (segment.assetId) {
       const asset = story.assets.find((a) => a.id === segment.assetId);
+      if (asset?.discovery && !asset.discovery.reviewed)
+        add(
+          "media-review",
+          "Review the discovered image's identity, archive context, attribution and license obligations before final production.",
+        );
       if (
         !asset ||
         !asset.permission ||

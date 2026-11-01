@@ -6,6 +6,8 @@ The local API pilot supports Claude analysis and drafts, Gemini narration, Assem
 
 ## Run locally
 
+Automatic previews now include [related archive/context photo discovery](docs/AUTOMATIC_VISUALS.md), with visible photo dates, creator/license credits and preserved source records. Existing previews can find photos and rebuild from the Preview screen. Sixty checks passed for the photo-discovery update, including source relevance, license metadata and safe image downloads.
+
 New stories can run **research → source-linked narration → private video** automatically. Existing dossiers have **Make video automatically** in Research. Automatic previews use local narration, preserve unresolved evidence warnings, and require editorial review plus a final render before approval. See [automatic production](docs/AUTOMATIC_PRODUCTION.md).
 
 Requires Node **24.13+**, npm, FFmpeg/ffprobe, and either macOS `say` or Linux `espeak-ng`. The installed local Node 25 and FFmpeg were used for verification.
