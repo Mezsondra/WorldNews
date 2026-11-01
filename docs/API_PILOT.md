@@ -32,11 +32,15 @@ The database stores the limit, total reserved allowance, and one unique cost eve
 | Operation                                       | Allowance reserved |
 | ----------------------------------------------- | -----------------: |
 | Claude source analysis                          |            US$0.50 |
+| Web research: bounded search and evidence check |            US$1.00 |
+| Explicit saved-source verification recovery: Claude |        US$0.50 |
+| Explicit saved-source verification recovery: Google |        US$0.15 |
+| Automatic extractive script and local private preview |      US$0.00 |
 | Claude draft                                    |            US$0.50 |
 | Gemini narration for one bounded render         |            US$1.00 |
 | AssemblyAI captions for one 60–90 second render |            US$0.10 |
 
-These are conservative allowances, **not vendor prices or an invoice**. They are deliberately retained after success, failure, timeout, or invalid model output. The application refuses another allocation when it would exceed the persisted ceiling, and identical operations cannot spend again automatically. Concurrent requests use a conditional SQL allocation; restart does not reset the allowance. Changing the environment does not raise a budget already in use. This first pilot is cumulative, not a recurring monthly budget.
+These are conservative allowances, **not vendor prices or an invoice**. They remain held after success, timeout, uncertain failure or invalid model output. An inspected Google verification HTTP 400/500 rejection without a returned generation can be reconciled once under [Google's documented billing policy](https://ai.google.dev/gemini-api/docs/billing#am-i-charged-for-failed-requests). Its operation key remains non-repeatable. The application refuses another allocation when it would exceed the persisted ceiling. Concurrent requests use a conditional SQL allocation; restart does not reset the allowance. Changing the environment does not raise a budget already in use. This first pilot is cumulative, not a recurring monthly budget. Automatic private media overrides paid voice/caption settings per job and makes no API calls.
 
 Provider usage counters and request/transcript IDs are retained where returned. Check account billing dashboards for actual charges and credit eligibility. This application limit covers its own bounded calls only; it does not control other applications using the same keys or replace provider-side billing controls. Model choice is pinned so an automatic fallback cannot silently select a more expensive model. Current integration references were checked on 31 October 2026; review rates/capabilities before extending the pilot.
 

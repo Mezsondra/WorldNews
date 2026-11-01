@@ -28,6 +28,7 @@ export interface Source {
   lineage: string;
   kind: "primary" | "secondary";
   usage: string;
+  research?: { runId: string; assessment: string; metadataReviewed?: boolean };
 }
 export interface Evidence {
   sourceId: string;
@@ -71,12 +72,14 @@ export interface Render {
   voice: string;
   captionTiming?: string;
   captionWarnings?: string[];
+  privatePreview?: boolean;
+  warnings?: string[];
 }
 export interface AIReport {
   id: string;
   storyId: string;
   version: number;
-  kind: "research" | "draft";
+  kind: "research" | "draft" | "verification";
   createdAt: string;
   data: Record<string, unknown>;
 }
@@ -87,11 +90,13 @@ export interface CostEvent {
   provider: string;
   operation: string;
   reservedUsd: number;
-  state: "reserved" | "succeeded" | "held" | "uncertain" | "blocked";
+  state:
+    "reserved" | "succeeded" | "held" | "uncertain" | "blocked" | "released";
   createdAt: string;
   usage?: Record<string, unknown>;
   providerId?: string;
   note?: string;
+  researchRunId?: string;
 }
 export interface PilotStatus {
   enabled: boolean;
@@ -100,7 +105,7 @@ export interface PilotStatus {
   remainingUsd: number;
   events: CostEvent[];
   providers: { claude: boolean; gemini: boolean; assemblyai: boolean };
-  models: { claude: string; gemini: string };
+  models: { claude: string; gemini: string; verification?: string };
   captions: string;
 }
 export interface Approval {
@@ -131,6 +136,13 @@ export interface Story {
   approval?: Approval;
   corrections: { at: string; text: string; version: number }[];
   pronunciations: Record<string, string>;
+  format?: "brief" | "explainer";
+  automation?: {
+    enabled: boolean;
+    state: "waiting-research" | "queued" | "rendering" | "ready" | "blocked";
+    message: string;
+    warnings: string[];
+  };
 }
 export interface Job {
   id: string;
@@ -142,6 +154,31 @@ export interface Job {
   lease: number;
   error?: string;
   createdAt: string;
+  kind?: "prepare" | "render";
+  privatePreview?: boolean;
+}
+export interface ResearchRun {
+  id: string;
+  storyId: string;
+  version: number;
+  revision: number;
+  status: "queued" | "running" | "succeeded" | "failed";
+  progress: string;
+  createdAt: string;
+  lease: number;
+  queries: string[];
+  candidates: {
+    url: string;
+    title: string;
+    status: "found" | "retrieved" | "skipped" | "failed";
+    note?: string;
+  }[];
+  warnings: string[];
+  error?: string;
+  resultVersion?: number;
+  mode?: "search" | "verify-saved";
+  seedRunId?: string;
+  verificationProvider?: "claude" | "gemini";
 }
 export interface Settings {
   paused: boolean;
@@ -159,4 +196,5 @@ export interface Overview {
   publishing: string;
   gates: Record<string, Gate[]>;
   pilot?: PilotStatus;
+  researchRuns?: ResearchRun[];
 }

@@ -32,7 +32,12 @@ import {
 } from "lucide-react";
 import type { Overview, Story, Claim, Source, Segment } from "../shared/types";
 import "./styles.css";
-import { AssistantPanel, PilotPanel } from "./ProviderPanels";
+import {
+  AssistantPanel,
+  PilotPanel,
+  ResearchBotPanel,
+  AutomationPanel,
+} from "./ProviderPanels";
 type Page =
   | "Stories"
   | "Research"
@@ -213,6 +218,19 @@ function App() {
       ),
     });
   const currentGates = story ? overview?.gates[story.id] || [] : [];
+  const storyStatus = (s: Story) => {
+    if (s.stage !== "researching") return status(s.stage);
+    const run = overview?.researchRuns?.find((r) => r.storyId === s.id);
+    return run?.status === "running"
+      ? "Research running"
+      : run?.status === "queued"
+        ? "Research queued"
+        : run?.status === "succeeded"
+          ? "Evidence review"
+          : run?.status === "failed"
+            ? "Research needs attention"
+            : "Needs research";
+  };
   const ready =
     overview?.stories.filter((s) => s.stage === "awaiting-review").length || 0;
   function card(s: Story, small = false) {
@@ -231,7 +249,7 @@ function App() {
         </div>
         <div className="art-rule" />
         <div className="art-category">
-          {s.category} / {s.eventAt ? date(s.eventAt) : "Research in progress"}
+          {s.category} / {s.eventAt ? date(s.eventAt) : "Event date pending"}
         </div>
         <h3>{s.title}</h3>
         <div className="art-line" />
@@ -533,7 +551,7 @@ function App() {
                               </p>
                             </div>
                             <span className={"badge " + s.stage}>
-                              {status(s.stage)}
+                              {storyStatus(s)}
                             </span>
                             <ArrowUpRight className="row-arrow" size={18} />
                           </button>
@@ -637,7 +655,7 @@ function App() {
                     <>
                       <span className="version">v{story.version}</span>
                       <span className={"badge " + story.stage}>
-                        {status(story.stage)}
+                        {storyStatus(story)}
                       </span>
                     </>
                   )}
@@ -1020,11 +1038,28 @@ function App() {
                       </section>
                     </div>
                     <aside className="research-inspector">
+                      <AutomationPanel
+                        story={story}
+                        disabled={busy || dirty || !!job}
+                        act={act}
+                      />
+                      <ResearchBotPanel
+                        story={story}
+                        pilot={overview.pilot}
+                        runs={(overview.researchRuns || []).filter(
+                          (r) => r.storyId === story.id,
+                        )}
+                        disabled={busy || dirty || !!job}
+                        act={act}
+                      />
                       <AssistantPanel
                         story={story}
                         pilot={overview.pilot}
                         disabled={busy || dirty || !!job}
                         act={act}
+                        runs={(overview.researchRuns || []).filter(
+                          (r) => r.storyId === story.id,
+                        )}
                       />
                       <SourcePanel
                         story={story}
@@ -1221,7 +1256,7 @@ function App() {
                         </div>
                         <div>
                           <dt>Voice</dt>
-                          <dd>{overview.voice}</dd>
+                          <dd>{render?.voice || overview.voice}</dd>
                         </div>
                       </dl>
                       <p className="hint">
@@ -1230,6 +1265,23 @@ function App() {
                       </p>
                       {render?.captionWarnings?.map((warning, i) => (
                         <p className="render-error" key={i}>
+                          {warning}
+                        </p>
+                      ))}
+                      {render?.privatePreview && (
+                        <p className="hint">
+                          <strong>
+                            Automatic private preview · editorial review pending
+                          </strong>
+                          <br />
+                          {story.format === "brief"
+                            ? "Short update using the currently supported findings."
+                            : "Source-linked narration prepared automatically."}{" "}
+                          Final production requires editorial checks.
+                        </p>
+                      )}
+                      {render?.warnings?.map((warning, i) => (
+                        <p className="hint" key={`preview-${i}`}>
                           {warning}
                         </p>
                       ))}
@@ -1246,7 +1298,7 @@ function App() {
                           className="button primary full"
                           disabled={
                             busy ||
-                            !!render ||
+                            (!!render && !render.privatePreview) ||
                             currentGates.some((g) => g.code !== "review") ||
                             dirty
                           }
@@ -1261,9 +1313,11 @@ function App() {
                           }
                         >
                           <Clapperboard size={17} />
-                          {render
-                            ? "This revision is rendered"
-                            : "Generate private preview"}
+                          {render?.privatePreview
+                            ? "Create final render after review"
+                            : render
+                              ? "This revision is rendered"
+                              : "Generate private preview"}
                         </button>
                       )}
                       {lastJob?.status === "failed" && (
@@ -1382,8 +1436,12 @@ function App() {
                         <dd>Required · exact revision</dd>
                       </div>
                       <div>
-                        <dt>Autonomy</dt>
-                        <dd>Disabled</dd>
+                        <dt>Private production</dt>
+                        <dd>Automatic after research · local narration</dd>
+                      </div>
+                      <div>
+                        <dt>Automatic publishing</dt>
+                        <dd>Disabled · approval required</dd>
                       </div>
                     </dl>
                     <button
@@ -1496,20 +1554,29 @@ function App() {
             <div className="eyebrow">OPEN A DOSSIER</div>
             <h2 id="new-title">What’s the story?</h2>
             <p>
-              Start with an original source or add a topic for manual research.
+              Add a topic or source URL. The research bot can find further
+              sources and check the story’s evidence.
             </p>
             <form
               onSubmit={(e) => {
                 e.preventDefault();
                 const f = new FormData(e.currentTarget);
                 void act(async () => {
-                  const s = await api<Story>("/stories", "POST", {
-                    title: f.get("title"),
-                    ...(f.get("url") ? { url: f.get("url") } : {}),
-                  });
+                  const s = await api<Story & { researchError?: string }>(
+                    "/stories",
+                    "POST",
+                    {
+                      title: f.get("title"),
+                      research: f.get("research") === "on",
+                      autoProduce: f.get("autoProduce") === "on",
+                      ...(f.get("url") ? { url: f.get("url") } : {}),
+                    },
+                  );
                   setSelected(s.id);
                   setPage("Research");
                   setNewOpen(false);
+                  if (s.researchError)
+                    throw new Error(`Dossier saved. ${s.researchError}`);
                 }, "Research dossier created.");
               }}
             >
@@ -1528,9 +1595,30 @@ function App() {
                 <input name="url" type="url" placeholder="https://…" />
               </label>
               <p className="hint">
-                Only public HTML pages are supported. Source text is retrieved
-                for review; no factual claims are generated automatically.
+                Research retrieves public HTML/text pages. Inaccessible pages
+                remain leads; bot findings need review before production.
               </p>
+              <label className="review-checkbox">
+                <input
+                  type="checkbox"
+                  name="research"
+                  defaultChecked={
+                    !!overview?.pilot?.enabled &&
+                    !!overview?.pilot?.providers.claude &&
+                    overview.pilot.remainingUsd >= 1
+                  }
+                />
+                <span>
+                  Start the research bot automatically · US$1.00 allowance
+                </span>
+              </label>
+              <label className="review-checkbox">
+                <input type="checkbox" name="autoProduce" defaultChecked />
+                <span>
+                  Automatically prepare a script and private video after
+                  research · local narration
+                </span>
+              </label>
               <button className="button primary full" disabled={busy}>
                 {busy ? (
                   <Loader2 className="spin" size={16} />
@@ -1623,6 +1711,15 @@ function SourcePanel({
             <br />
             Publication {s.publishedAt ? date(s.publishedAt) : "not provided"}
           </small>
+          {s.research && (
+            <p className="hint">
+              Bot assessment: {s.research.assessment}
+              <br />
+              {s.research.metadataReviewed
+                ? "Source metadata reviewed."
+                : "Review source type and originating lineage, then save metadata to confirm."}
+            </p>
+          )}
           <SourceMetadata
             key={s.id + story.version}
             source={s}

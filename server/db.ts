@@ -8,6 +8,8 @@ import type {
   Settings,
   CostEvent,
   AIReport,
+  ResearchRun,
+  Source,
 } from "../shared/types.js";
 
 export const dataDir = path.resolve(process.env.DATA_DIR || "data");
@@ -57,6 +59,9 @@ export class Store {
         "CREATE TABLE IF NOT EXISTS pilot_budget (id TEXT PRIMARY KEY, limit_micros BIGINT NOT NULL, reserved_micros BIGINT NOT NULL DEFAULT 0)",
         "CREATE TABLE IF NOT EXISTS cost_events (id TEXT PRIMARY KEY, operation_key TEXT NOT NULL UNIQUE, story_id TEXT NOT NULL, body TEXT NOT NULL)",
         "CREATE TABLE IF NOT EXISTS ai_reports (id TEXT PRIMARY KEY, story_id TEXT NOT NULL, body TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS research_runs (id TEXT PRIMARY KEY, story_id TEXT NOT NULL, status TEXT NOT NULL, lease BIGINT NOT NULL DEFAULT 0, body TEXT NOT NULL)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS one_active_research ON research_runs(story_id) WHERE status IN ('queued','running')",
+        "CREATE TABLE IF NOT EXISTS research_sources (run_id TEXT NOT NULL, source_id TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY(run_id,source_id))",
       ])
         await this.query(sql, [], migrationClient);
       try {
@@ -303,6 +308,52 @@ export class Store {
       event.id,
     ]);
   }
+  async reconcileGoogleRejection(eventId: string, httpStatus: 400 | 500) {
+    const event = (await this.costs()).find((e) => e.id === eventId);
+    if (
+      !event ||
+      event.provider !== "gemini" ||
+      !event.operation.startsWith("web-verify-saved") ||
+      event.state !== "uncertain" ||
+      event.usage?.verification
+    )
+      throw new Error(
+        "Only an inspected Google verification rejection without a returned generation can be reconciled.",
+      );
+    const run = (await this.researchRuns()).find(
+      (r) =>
+        r.id === event.researchRunId &&
+        r.storyId === event.storyId &&
+        r.version === Number(event.operationKey.split(":")[1]) &&
+        r.error ===
+          `Gemini evidence checker returned HTTP ${httpStatus}. No automatic retry was made.`,
+    );
+    if (!run)
+      throw new Error("No matching inspected provider rejection was found.");
+    const previous = JSON.stringify(event);
+    const released = {
+      ...event,
+      state: "released",
+      note: `Inspected HTTP ${httpStatus} rejection: Google documents no token charge. Reservation reconciled once; operation remains non-repeatable. https://ai.google.dev/gemini-api/docs/billing#am-i-charged-for-failed-requests`,
+    };
+    const changed = await this.query(
+      "UPDATE cost_events SET body=? WHERE id=? AND body=? RETURNING id",
+      [JSON.stringify(released), eventId, previous],
+    );
+    if (!changed.length)
+      throw new Error("This rejection was already reconciled.");
+    // Mark first: a crash can retain excess allowance but can never credit it twice.
+    const amount = Math.ceil(event.reservedUsd * 1_000_000);
+    await this.query(
+      "UPDATE pilot_budget SET reserved_micros=reserved_micros-? WHERE id=? AND reserved_micros>=?",
+      [amount, "pilot", amount],
+    );
+    await this.audit("google-rejection-reconciled", {
+      eventId,
+      httpStatus,
+      releasedUsd: event.reservedUsd,
+    });
+  }
   async addReport(report: AIReport) {
     await this.query("INSERT INTO ai_reports(id,story_id,body) VALUES(?,?,?)", [
       report.id,
@@ -318,5 +369,63 @@ export class Store {
     )
       .map((r) => JSON.parse(r.body))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  async updateReport(report: AIReport) {
+    await this.query("UPDATE ai_reports SET body=? WHERE id=? AND story_id=?", [
+      JSON.stringify(report),
+      report.id,
+      report.storyId,
+    ]);
+  }
+  async researchRuns(): Promise<ResearchRun[]> {
+    return (await this.query("SELECT body,status,lease FROM research_runs"))
+      .map((r) => ({
+        ...JSON.parse(r.body),
+        status: r.status,
+        lease: Number(r.lease),
+      }))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  async addResearchSource(runId: string, source: Source) {
+    await this.query(
+      "INSERT INTO research_sources(run_id,source_id,body) VALUES(?,?,?) ON CONFLICT(run_id,source_id) DO NOTHING",
+      [runId, source.id, JSON.stringify(source)],
+    );
+  }
+  async researchSources(runId: string): Promise<Source[]> {
+    return (
+      await this.query("SELECT body FROM research_sources WHERE run_id=?", [
+        runId,
+      ])
+    ).map((r) => JSON.parse(r.body));
+  }
+  async addResearch(run: ResearchRun) {
+    try {
+      await this.query(
+        "INSERT INTO research_runs(id,story_id,status,lease,body) VALUES(?,?,?,?,?)",
+        [run.id, run.storyId, run.status, run.lease, JSON.stringify(run)],
+      );
+    } catch {
+      throw Object.assign(
+        new Error("Research is already queued or running for this story."),
+        { status: 409 },
+      );
+    }
+  }
+  async claimResearch(runId: string) {
+    return (
+      (
+        await this.query(
+          "UPDATE research_runs SET status='running',lease=? WHERE id=? AND status='queued' RETURNING id",
+          [Date.now() + 120000, runId],
+        )
+      ).length > 0
+    );
+  }
+  async updateResearch(run: ResearchRun) {
+    await this.query(
+      "UPDATE research_runs SET status=?,lease=?,body=? WHERE id=? AND status IN ('queued','running')",
+      [run.status, run.lease, JSON.stringify(run), run.id],
+    );
   }
 }

@@ -44,6 +44,15 @@ export function invalidate(story: Story): Story {
 export function productionGates(story: Story) {
   return gates(story).filter((g) => g.code !== "review");
 }
+export function previewGates(story: Story) {
+  // Human review and an unknown event date can wait for a watermarked private preview.
+  // Factual support, contradictions, citations, translations and media rights cannot.
+  return gates(story).filter(
+    (g) =>
+      !["review", "provenance"].includes(g.code) &&
+      !(g.code === "date" && !story.eventAt),
+  );
+}
 export function gates(story: Story): Gate[] {
   const issues: Gate[] = [];
   const add = (code: string, message: string) => issues.push({ code, message });
@@ -54,10 +63,11 @@ export function gates(story: Story): Gate[] {
   if (!story.segments.length)
     add("script", "Write at least one narration segment.");
   const words = wordCount(story);
-  if (words < 140 || words > 205)
+  const minimum = story.format === "brief" ? 60 : 140;
+  if (words < minimum || words > 205)
     add(
       "length",
-      `Narration has ${words} words. Use 140–205 words for the 60–90 second draft.`,
+      `Narration has ${words} words. Use ${minimum}–205 words for this ${story.format === "brief" ? "short update" : "60–90 second draft"}.`,
     );
   const seen = new Set<string>();
   for (const segment of story.segments) {
@@ -98,6 +108,11 @@ export function gates(story: Story): Gate[] {
             `${claimId}: evidence must match the retrieved source snapshot.`,
           );
         else if (e.relation === "supports") sources.push(source);
+        if (source?.research && !source.research.metadataReviewed)
+          add(
+            "provenance",
+            `${claimId}: review the bot's source classification and originating lineage before production.`,
+          );
         if (e.relation === "contradicts")
           add(
             "contradiction",

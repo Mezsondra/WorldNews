@@ -2239,3 +2239,38 @@ dd {
     font-size: 11px;
   }
 }
+
+.research-bot-panel .button {
+  width: 100%;
+  justify-content: center;
+}
+.research-run {
+  border-top: 1px solid var(--line);
+  margin-top: 18px;
+  padding-top: 12px;
+}
+.research-run details {
+  margin-top: 12px;
+  overflow-wrap: anywhere;
+}
+.research-run summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.research-run ul {
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.research-run li {
+  margin-bottom: 10px;
+}
+.research-run li small {
+  display: block;
+  color: var(--muted);
+}
+.research-run > small {
+  color: var(--muted);
+  font-size: 11px;
+}

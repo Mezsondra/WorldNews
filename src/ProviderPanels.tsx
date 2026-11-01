@@ -6,8 +6,15 @@ import {
   ShieldCheck,
   AlertCircle,
   Check,
+  Loader2,
+  Clapperboard,
 } from "lucide-react";
-import type { AIReport, PilotStatus, Story } from "../shared/types";
+import type {
+  AIReport,
+  PilotStatus,
+  ResearchRun,
+  Story,
+} from "../shared/types";
 type Act = (fn: () => Promise<unknown>, message?: string) => Promise<void>;
 async function call(url: string, body?: unknown) {
   const r = await fetch("/api" + url, {
@@ -19,16 +26,85 @@ async function call(url: string, body?: unknown) {
   if (!r.ok) throw new Error(data.error || "Provider request failed.");
   return data;
 }
+export function AutomationPanel({
+  story,
+  disabled,
+  act,
+}: {
+  story: Story;
+  disabled: boolean;
+  act: Act;
+}) {
+  const flow = story.automation;
+  const active =
+    !!flow && ["waiting-research", "queued", "rendering"].includes(flow.state);
+  return (
+    <section className="editor-section">
+      <div className="section-title">
+        <h2>Automatic production</h2>
+        <Clapperboard size={18} />
+      </div>
+      <p className="hint">
+        Research → source-linked script → narrated private video. Local
+        narration and estimated captions use no extra API credit.
+      </p>
+      {flow && (
+        <p role="status">
+          <strong>{flow.message}</strong>
+        </p>
+      )}
+      <button
+        className="button primary"
+        disabled={
+          disabled ||
+          active ||
+          story.renders.some((r) => r.version === story.version) ||
+          ["held", "rejected", "approved"].includes(story.stage)
+        }
+        onClick={() =>
+          void act(
+            () =>
+              call(`/stories/${story.id}/automate`, { version: story.version }),
+            "Automatic production enabled. The video will appear in Preview.",
+          )
+        }
+      >
+        {active ? (
+          <Loader2 className="spin" size={15} />
+        ) : (
+          <Clapperboard size={15} />
+        )}
+        {active
+          ? "Working automatically"
+          : flow?.state === "ready"
+            ? "Video ready in Preview"
+            : "Make video automatically"}
+      </button>
+      <p className="provider-note">
+        Only claims passing the evidence checks enter narration. Unresolved
+        claims stay in the dossier. Brief previews can be shorter than a minute;
+        publication requires review and a final render.
+      </p>
+      {flow?.warnings.map((warning, i) => (
+        <p className="hint" key={i}>
+          {warning}
+        </p>
+      ))}
+    </section>
+  );
+}
 export function AssistantPanel({
   story,
   pilot,
   disabled,
   act,
+  runs = [],
 }: {
   story: Story;
   pilot?: PilotStatus;
   disabled: boolean;
   act: Act;
+  runs?: ResearchRun[];
 }) {
   const [reports, setReports] = useState<AIReport[]>([]);
   const [refresh, setRefresh] = useState(0);
@@ -37,7 +113,7 @@ export function AssistantPanel({
     void call(`/stories/${story.id}/ai-reports`)
       .then(setReports)
       .catch(() => {});
-  }, [story.id, story.version, refresh]);
+  }, [story.id, story.version, refresh, runs[0]?.status]);
   const attempted = (kind: string) =>
     pilot?.events.some(
       (e) => e.operationKey === `${story.id}:${story.version}:claude:${kind}`,
@@ -60,6 +136,15 @@ export function AssistantPanel({
     );
   }
   const latest = reports.find((r) => r.id === reportId) || reports[0];
+  const researching = runs.some((r) =>
+    ["queued", "running"].includes(r.status),
+  );
+  const label = (kind: AIReport["kind"]) =>
+    kind === "verification"
+      ? "Web research & evidence check"
+      : kind === "research"
+        ? "Attached source analysis"
+        : "Draft result";
   return (
     <section className="editor-section assistant-panel">
       <div className="section-title">
@@ -67,14 +152,16 @@ export function AssistantPanel({
         <Sparkles size={18} />
       </div>
       <p className="hint">
-        Claude analyzes attached source snapshots. It can flag gaps and draft
-        narration; it does not search the web or approve facts.
+        Analyze saved snapshots or draft narration below. Use the research bot
+        above to find sources and check evidence on the web. Findings need
+        editorial review.
       </p>
       <div className="assistant-actions">
         <button
           className="button"
           disabled={
             disabled ||
+            researching ||
             !story.sources.length ||
             !pilot?.enabled ||
             !pilot.providers.claude ||
@@ -90,6 +177,7 @@ export function AssistantPanel({
           className="button primary"
           disabled={
             disabled ||
+            researching ||
             !story.sources.length ||
             !pilot?.enabled ||
             !pilot.providers.claude ||
@@ -123,10 +211,7 @@ export function AssistantPanel({
           >
             {reports.map((report) => (
               <option key={report.id} value={report.id}>
-                {report.kind === "research"
-                  ? "Source analysis"
-                  : "Draft result"}{" "}
-                · v{report.version} ·{" "}
+                {label(report.kind)} · v{report.version} ·{" "}
                 {new Date(report.createdAt).toLocaleTimeString()}
               </option>
             ))}
@@ -136,8 +221,7 @@ export function AssistantPanel({
       {latest && (
         <details className="ai-report" key={latest.id} open>
           <summary>
-            {latest.kind === "research" ? "Source analysis" : "Draft result"} ·
-            v{latest.version}
+            {label(latest.kind)} · v{latest.version}
           </summary>
           {typeof latest.data.summary === "string" && (
             <p>{latest.data.summary}</p>
@@ -171,6 +255,199 @@ export function AssistantPanel({
             </p>
           )}
         </details>
+      )}
+    </section>
+  );
+}
+export function ResearchBotPanel({
+  story,
+  pilot,
+  runs,
+  disabled,
+  act,
+}: {
+  story: Story;
+  pilot?: PilotStatus;
+  runs: ResearchRun[];
+  disabled: boolean;
+  act: Act;
+}) {
+  const run = runs[0];
+  const active = runs.some((r) => ["queued", "running"].includes(r.status));
+  const attempted = pilot?.events.some(
+    (e) =>
+      e.operationKey === `${story.id}:${story.version}:claude:web-research`,
+  );
+  const recoveryChoices = [
+    {
+      provider: "claude" as const,
+      label: "Claude",
+      allowance: 0.5,
+      operation: "web-verify-saved",
+    },
+    {
+      provider: "gemini" as const,
+      label: "Google",
+      allowance: 0.15,
+      operation: `web-verify-saved:${pilot?.models.verification}:passage-refs-v2`,
+    },
+  ];
+  return (
+    <section className="editor-section research-bot-panel">
+      <div className="section-title">
+        <h2>Research bot</h2>
+        <Search size={18} />
+      </div>
+      <p className="hint">
+        Find original documents, independent reporting and relevant public
+        responses. Check claims against retrieved pages and preserve supporting
+        and contradicting passages.
+      </p>
+      <button
+        className="button primary"
+        disabled={
+          disabled ||
+          active ||
+          !pilot?.enabled ||
+          !pilot.providers.claude ||
+          pilot.remainingUsd < 1 ||
+          attempted ||
+          ["held", "rejected", "approved"].includes(story.stage)
+        }
+        onClick={() =>
+          void act(
+            () =>
+              call(`/stories/${story.id}/research`, { version: story.version }),
+            "Research queued. Progress and findings will appear here.",
+          )
+        }
+      >
+        {active ? <Loader2 className="spin" size={15} /> : <Search size={15} />}
+        {active ? "Research in progress" : "Find sources & verify"}
+      </button>
+      <p className="provider-note">
+        US$1.00 reserved for up to four searches and one evidence check. No
+        automatic paid retries. Findings remain unreviewed.
+      </p>
+      {run?.status === "failed" &&
+        run.version === story.version &&
+        run.candidates.some((c) => c.status === "retrieved") &&
+        recoveryChoices
+          .filter(
+            (choice) =>
+              !pilot?.events.some(
+                (e) =>
+                  e.operationKey ===
+                  `${story.id}:${story.version}:${choice.provider}:${choice.operation}`,
+              ),
+          )
+          .map((choice) => (
+            <button
+              key={choice.provider}
+              className="button"
+              disabled={
+                disabled ||
+                active ||
+                !pilot?.enabled ||
+                !pilot.providers[choice.provider] ||
+                pilot.remainingUsd < choice.allowance ||
+                ["held", "rejected", "approved"].includes(story.stage)
+              }
+              onClick={() =>
+                void act(
+                  () =>
+                    call(`/stories/${story.id}/research`, {
+                      version: story.version,
+                      resumeRunId: run.id,
+                      verificationProvider: choice.provider,
+                    }),
+                  "Saved sources queued for verification. No new web search will be sent.",
+                )
+              }
+            >
+              Verify saved sources · {choice.label} · US$
+              {choice.allowance.toFixed(2)}
+            </button>
+          ))}
+      {pilot && pilot.remainingUsd < 1 && !active && (
+        <p className="hint">
+          New web research needs US$1.00 available; US$
+          {pilot.remainingUsd.toFixed(2)} remains in this pilot.
+        </p>
+      )}
+      {run && (
+        <div className="research-run" aria-live="polite">
+          <p>
+            <strong>{run.progress}</strong>
+          </p>
+          <small>
+            Started {new Date(run.createdAt).toLocaleString()} · v{run.version}
+            {run.resultVersion ? ` → v${run.resultVersion}` : ""}
+            {run.verificationProvider
+              ? ` · ${run.verificationProvider === "gemini" ? "Google" : "Claude"} evidence check`
+              : ""}
+          </small>
+          {run.error && <p className="render-error">{run.error}</p>}
+          {run.warnings.map((warning, i) => (
+            <p className="hint" key={i}>
+              {warning}
+            </p>
+          ))}
+          {run.status === "succeeded" && (
+            <p className="hint">
+              Read the saved evidence report below and inspect the claims and
+              sources in the dossier. Source classifications and translations
+              are provisional.
+            </p>
+          )}
+          {run.status === "succeeded" &&
+            !story.sources.some((s) => s.kind === "primary") && (
+              <p className="hint">
+                No primary document or original statement is attached yet. Legal
+                conclusions and underlying allegations still need original
+                evidence.
+              </p>
+            )}
+          {!!run.queries.length && (
+            <details>
+              <summary>Searches performed ({run.queries.length})</summary>
+              <ul>
+                {run.queries.map((query, i) => (
+                  <li key={i}>{query}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {!!run.candidates.length && (
+            <details>
+              <summary>Source leads ({run.candidates.length})</summary>
+              <ul>
+                {run.candidates.map((candidate) => (
+                  <li key={candidate.url}>
+                    <a href={candidate.url} target="_blank" rel="noreferrer">
+                      {candidate.title}
+                    </a>
+                    <small>
+                      {candidate.status}{" "}
+                      {candidate.note ? `· ${candidate.note}` : ""}
+                    </small>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+          {run.candidates.some((c) => c.status === "retrieved") && (
+            <p>
+              <a
+                href={`/api/stories/${story.id}/research/${run.id}/sources`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Saved research snapshots
+              </a>
+            </p>
+          )}
+        </div>
       )}
     </section>
   );
@@ -233,8 +510,9 @@ export function PilotPanel({ pilot }: { pilot?: PilotStatus }) {
       <p className="hint">
         <ShieldCheck size={14} />
         Reservations are conservative usage allowances, not invoices. They count
-        credit usage and stay held after failure or timeout. The total persists
-        across restarts. Hosting is excluded.
+        credit usage and stay held after timeout or uncertain failure. Inspected
+        Google rejections documented as unbilled can be reconciled once. The
+        total persists across restarts. Hosting is excluded.
       </p>
       <div className="usage-events">
         {pilot.events.slice(0, 12).map((event) => (

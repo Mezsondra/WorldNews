@@ -1,6 +1,10 @@
 import type { Job } from "../shared/types.js";
 import { Store } from "./db.js";
-import { productionGates, now } from "./domain.js";
+import { productionGates, previewGates, now } from "./domain.js";
+import {
+  prepareAutomaticVideo,
+  scheduleAutomaticVideos,
+} from "./automation.js";
 import { renderStory } from "./media.js";
 export function startWorker(store: Store) {
   let busy = false,
@@ -9,6 +13,7 @@ export function startWorker(store: Store) {
     if (busy || stopped) return;
     busy = true;
     try {
+      await scheduleAutomaticVideos(store);
       const jobs = await store.jobs();
       for (const job of jobs.filter(
         (j) => j.status === "running" && j.lease < Date.now(),
@@ -40,7 +45,16 @@ export function startWorker(store: Store) {
         const story = await store.get(job.storyId);
         if (!story || story.version !== job.version)
           throw new Error("Content version changed; render cancelled.");
-        const issues = productionGates(story);
+        if (job.kind === "prepare") {
+          await prepareAutomaticVideo(store, story);
+          job.status = "succeeded";
+          job.progress =
+            "Source-linked script saved; video follows automatically";
+          return;
+        }
+        const issues = job.privatePreview
+          ? previewGates(story)
+          : productionGates(story);
         if (issues.length) throw new Error(issues[0].message);
         const result = await renderStory(
           story,
@@ -53,6 +67,9 @@ export function startWorker(store: Store) {
             await store.updateJob(job);
           },
           store,
+          job.privatePreview
+            ? { tts: "local", captions: "estimated", privatePreview: true }
+            : {},
         );
         const latest = await store.get(story.id);
         if (!latest || latest.version !== story.version)
@@ -63,6 +80,11 @@ export function startWorker(store: Store) {
           .filter((r) => r.version !== story.version)
           .concat(result);
         latest.stage = "awaiting-review";
+        if (latest.automation) {
+          latest.automation.state = "ready";
+          latest.automation.message =
+            "Private video ready in Preview. Editorial checks remain before final production.";
+        }
         latest.updatedAt = now();
         await store.save(latest, story.version);
         await store.snapshot(latest);
@@ -78,6 +100,11 @@ export function startWorker(store: Store) {
         job.error = error instanceof Error ? error.message : "Render failed";
         job.progress = "Needs attention";
         const story = await store.get(job.storyId);
+        if (story?.version === job.version && story.automation) {
+          story.automation.state = "blocked";
+          story.automation.message = job.error;
+          await store.save(story, story.version);
+        }
         if (story?.version === job.version && story.stage === "producing") {
           story.stage = "drafting";
           await store.save(story, story.version);

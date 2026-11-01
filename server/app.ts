@@ -14,6 +14,8 @@ import {
   now,
 } from "./domain.js";
 import { retrieve } from "./fetcher.js";
+import { queueResearch } from "./research.js";
+import { queueAutomaticVideo } from "./automation.js";
 import { sourcePage } from "./source-page.js";
 import type { Story, Job } from "../shared/types.js";
 import {
@@ -224,6 +226,7 @@ export function createApp(store: Store) {
         : "SQLite · local development",
       voice: voiceLabel(),
       pilot: await pilotStatus(store),
+      researchRuns: await store.researchRuns(),
       publishing: "Export only · accounts not connected",
       gates: Object.fromEntries(stories.map((s) => [s.id, gates(s)])),
     });
@@ -233,13 +236,33 @@ export function createApp(store: Store) {
       .object({
         title: short.min(1).max(140),
         url: z.string().url().optional(),
+        research: z.boolean().optional().default(true),
+        autoProduce: z.boolean().optional().default(true),
       })
       .parse(req.body);
     const story = newStory(input.title);
+    if (input.autoProduce)
+      story.automation = {
+        enabled: true,
+        state: "waiting-research",
+        message: "Research will continue into an automatic private video",
+        warnings: [],
+      };
     if (input.url) story.sources.push(await retrieve(input.url));
     await store.create(story);
     await store.audit("story-created", { id: story.id });
-    res.status(201).json(story);
+    let researchError: string | undefined;
+    if (input.research) {
+      try {
+        await queueResearch(store, story);
+      } catch (error) {
+        researchError =
+          error instanceof Error
+            ? error.message
+            : "Research could not be queued.";
+      }
+    }
+    res.status(201).json({ ...story, researchError });
   });
   app.get("/api/stories/:id", async (req, res) =>
     res.json(await get(req.params.id)),
@@ -247,6 +270,43 @@ export function createApp(store: Store) {
   app.get("/api/stories/:id/ai-reports", async (req, res) =>
     res.json(await store.reports(String(req.params.id))),
   );
+  app.post("/api/stories/:id/automate", async (req, res) => {
+    const input = z
+      .object({ version: z.number().int().positive() })
+      .parse(req.body);
+    const story = await get(req.params.id);
+    version(story, input.version);
+    res.status(202).json(await queueAutomaticVideo(store, story));
+  });
+  app.post("/api/stories/:id/research", async (req, res) => {
+    const input = z
+      .object({
+        version: z.number().int().positive(),
+        resumeRunId: identifier.optional(),
+        verificationProvider: z.enum(["claude", "gemini"]).optional(),
+      })
+      .parse(req.body);
+    const story = await get(req.params.id);
+    version(story, input.version);
+    res
+      .status(202)
+      .json(
+        await queueResearch(
+          store,
+          story,
+          input.resumeRunId,
+          input.verificationProvider,
+        ),
+      );
+  });
+  app.get("/api/stories/:id/research/:runId/sources", async (req, res) => {
+    await get(req.params.id);
+    const run = (await store.researchRuns()).find(
+      (r) => r.id === req.params.runId && r.storyId === req.params.id,
+    );
+    if (!run) fail("Research run not found.", 404);
+    res.json(await store.researchSources(run!.id));
+  });
   app.post("/api/stories/:id/assist", async (req, res) => {
     const input = z
       .object({
@@ -258,6 +318,15 @@ export function createApp(store: Store) {
     version(old, input.version);
     if (["held", "rejected", "producing"].includes(old.stage))
       fail("Resume research or finish the active render first.", 422);
+    if (
+      (await store.researchRuns()).some(
+        (r) => r.storyId === old.id && ["queued", "running"].includes(r.status),
+      )
+    )
+      fail(
+        "Wait for the research bot to finish before analyzing or drafting.",
+        409,
+      );
     const result = await claudeAssist(store, old, input.kind);
     const current = await get(old.id);
     version(current, input.version);
@@ -335,7 +404,15 @@ export function createApp(store: Store) {
         invalidate({
           ...old,
           sources: old.sources.map((s) =>
-            s.id === source!.id ? { ...s, ...fields } : s,
+            s.id === source!.id
+              ? {
+                  ...s,
+                  ...fields,
+                  ...(s.research
+                    ? { research: { ...s.research, metadataReviewed: true } }
+                    : {}),
+                }
+              : s,
           ),
         }),
       ),
@@ -402,7 +479,11 @@ export function createApp(store: Store) {
       return res
         .status(422)
         .json({ error: "Editorial checks need attention.", gates: issues });
-    if (story.renders.some((r) => r.version === story.version))
+    if (
+      story.renders.some(
+        (r) => r.version === story.version && !r.privatePreview,
+      )
+    )
       fail("This version is already rendered. Edit content to regenerate.");
     const active = (await store.jobs()).find(
       (j) =>
@@ -445,6 +526,11 @@ export function createApp(store: Store) {
       fail("Resolve editorial checks before approval.", 422);
     if (!story.renders.some((r) => r.version === story.version))
       fail("Render and inspect this exact version first.", 422);
+    if (story.renders.find((r) => r.version === story.version)?.privatePreview)
+      fail(
+        "This automatic preview is for evidence review. Complete editorial checks and create a final render before approval.",
+        422,
+      );
     if (
       story.renders.find((r) => r.version === story.version)?.captionWarnings
         ?.length &&

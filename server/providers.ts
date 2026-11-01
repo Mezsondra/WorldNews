@@ -12,10 +12,11 @@ import { id, now } from "./domain.js";
 export type Fetcher = typeof fetch;
 export const CLAUDE_MODEL = "claude-sonnet-4-6";
 export const GEMINI_MODEL = "gemini-3.8-flash-tts";
-export const voiceLabel = () =>
-  process.env.TTS_PROVIDER === "gemini"
+export const GEMINI_VERIFICATION_MODEL = "gemini-3.8-flash";
+export const voiceLabel = (provider = process.env.TTS_PROVIDER) =>
+  provider === "gemini"
     ? "Gemini · synthetic voice"
-    : process.env.TTS_PROVIDER === "elevenlabs"
+    : provider === "elevenlabs"
       ? "ElevenLabs · synthetic voice"
       : "Local development voice";
 export async function pilotStatus(store: Store): Promise<PilotStatus> {
@@ -28,7 +29,11 @@ export async function pilotStatus(store: Store): Promise<PilotStatus> {
       gemini: !!process.env.GEMINI_API_KEY,
       assemblyai: !!process.env.ASSEMBLYAI_API_KEY,
     },
-    models: { claude: CLAUDE_MODEL, gemini: GEMINI_MODEL },
+    models: {
+      claude: CLAUDE_MODEL,
+      gemini: GEMINI_MODEL,
+      verification: GEMINI_VERIFICATION_MODEL,
+    },
     captions: process.env.CAPTIONS_PROVIDER || "estimated",
   };
 }
@@ -60,7 +65,7 @@ export async function reserve(
   await store.reserveCost(event);
   return event;
 }
-async function json(
+export async function json(
   response: Response,
   provider: string,
   max = 20_000_000,

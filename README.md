@@ -2,9 +2,11 @@
 
 A working local implementation of the immediate target in [the build plan](World_News_Bot_Build_Plan.md): one manually selected story through sources, evidence, narration, a breaking card, vertical video, and a matching source page. A responsive TypeScript dashboard operates the workflow. No social account is connected and nothing posts automatically.
 
-The next local phase adds Claude source analysis and structured drafts, Gemini narration, AssemblyAI word-timed captions, and a persistent combined pilot allowance. See [API pilot setup and controls](docs/API_PILOT.md). Live calls are opt-in; tests use mocked providers.
+The local API pilot supports Claude analysis and drafts, Gemini narration, AssemblyAI word-timed captions, and a persistent combined allowance. **Research → Research bot → Find sources & verify** now searches for sources and checks exact evidence passages in a background job. New dossiers can start it automatically within the configured budget. See [the research workflow](docs/WEB_RESEARCH.md) and [API pilot controls](docs/API_PILOT.md). Tests use mocked providers.
 
 ## Run locally
+
+New stories can run **research → source-linked narration → private video** automatically. Existing dossiers have **Make video automatically** in Research. Automatic previews use local narration, preserve unresolved evidence warnings, and require editorial review plus a final render before approval. See [automatic production](docs/AUTOMATIC_PRODUCTION.md).
 
 Requires Node **24.13+**, npm, FFmpeg/ffprobe, and either macOS `say` or Linux `espeak-ng`. The installed local Node 25 and FFmpeg were used for verification.
 
@@ -56,6 +58,8 @@ docker compose exec app npm run demo
 The dashboard listens on loopback by default. Non-loopback Node hosting requires the configured password. HTTP Basic authentication accepts any username with the configured password; place an HTTPS reverse proxy or authenticated private tunnel in front of a server. Configure `ALLOWED_HOSTS` for its hostname. Public source-page routes expose approved snapshots only; all media and private routes share dashboard authentication when configured. No cloud service or domain was provisioned. See [operations](docs/OPERATIONS.md) for backup and recovery procedures and remaining production work.
 
 ## Verification
+
+The current research/automatic-production update passed **55 tests**, including the disposable PostgreSQL checks, plus TypeScript/Vite build validation. The Poland dossier produced a **35.469971-second** 1080×1920 H.264/AAC private preview from three eligible findings, with no additional API reservation. FFmpeg decoded the output without errors and browser QA confirmed the video loads.
 
 ```sh
 npm test

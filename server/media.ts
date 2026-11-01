@@ -86,6 +86,7 @@ export function frame(
   segmentIndex: number,
   height = 1920,
   background?: string,
+  privatePreview = false,
 ) {
   const segment = story.segments[segmentIndex];
   const sourceIds = [
@@ -150,7 +151,7 @@ export function frame(
     ${svgText(dateLabel, 80, height - 245, 30, 53, "#aabbac")}
     ${asset ? svgText((asset.archive ? "ARCHIVE · " : "") + asset.creator.slice(0, 40) + " · " + asset.eventDate + " · " + asset.location.slice(0, 30), 80, height - 360, 18, 75, "#b7c8a6") : ""}
     ${svgText((process.env.PUBLIC_BASE_URL || "http://localhost:4310").replace(/^https?:\/\//, "") + "/s/" + story.id.slice(0, 8) + "?v=" + story.version, 80, height - 190, 30, 53, "#e5ebdd")}
-    ${svgText(story.demo ? "HISTORICAL SAMPLE · NOT CURRENT NEWS" : "DRAFT · EDITORIAL APPROVAL REQUIRED", 80, height - 115, 22, 70, "#adc594")}
+    ${svgText(story.demo ? "HISTORICAL SAMPLE · NOT CURRENT NEWS" : privatePreview ? "PRIVATE PREVIEW · EDITORIAL REVIEW PENDING" : "DRAFT · EDITORIAL APPROVAL REQUIRED", 80, height - 115, 22, 70, "#adc594")}
     ${!card ? svgText(String(segmentIndex + 1).padStart(2, "0") + " / " + String(story.segments.length).padStart(2, "0"), 850, height - 115, 22, 15, "#adc594") : ""}
   </svg>`;
 }
@@ -165,9 +166,10 @@ async function narration(
   story: Story,
   store?: Store,
   event?: CostEvent,
+  provider = process.env.TTS_PROVIDER || "local",
 ) {
   text = pronounce(text, story);
-  if (process.env.TTS_PROVIDER === "gemini") {
+  if (provider === "gemini") {
     const result = await geminiSpeech(text, process.env.GEMINI_VOICE || "Kore");
     await writeFile(file + ".provider-audio", result.audio);
     const isWav = result.audio.subarray(0, 4).toString() === "RIFF";
@@ -201,7 +203,7 @@ async function narration(
       event.providerId = result.providerId;
       await store.finishCost(event);
     }
-  } else if (process.env.TTS_PROVIDER === "elevenlabs") {
+  } else if (provider === "elevenlabs") {
     const key = process.env.ELEVENLABS_API_KEY,
       voice = process.env.ELEVENLABS_VOICE_ID;
     if (!key || !voice || !/^[a-zA-Z0-9_-]+$/.test(voice))
@@ -264,19 +266,33 @@ export async function renderStory(
   story: Story,
   progress: (value: string) => Promise<void>,
   store?: Store,
+  options: {
+    tts?: "local" | "gemini";
+    captions?: "estimated" | "assemblyai";
+    privatePreview?: boolean;
+  } = {},
 ): Promise<Render> {
+  const provider = options.tts || process.env.TTS_PROVIDER || "local";
+  const captions =
+    options.captions || process.env.CAPTIONS_PROVIDER || "estimated";
+  if (
+    options.privatePreview &&
+    (provider !== "local" || captions !== "estimated")
+  )
+    throw new Error(
+      "Automatic private previews use local narration and estimated captions only.",
+    );
   const paidChars = story.segments.reduce(
     (n, s) => n + pronounce(s.text, story).length,
     0,
   );
   if (
-    ["elevenlabs", "gemini"].includes(process.env.TTS_PROVIDER || "") &&
+    ["elevenlabs", "gemini"].includes(provider) &&
     paidChars > Number(process.env.MAX_PAID_CHARACTERS_PER_RENDER || 1500)
   )
     throw new Error(
       "Paid narration character ceiling exceeded. Shorten the script or explicitly raise the configured cap.",
     );
-  const provider = process.env.TTS_PROVIDER || "local";
   if (!["local", "gemini", "elevenlabs"].includes(provider))
     throw new Error("Unknown narration provider.");
   if (
@@ -290,15 +306,9 @@ export async function renderStory(
     throw new Error(
       "ElevenLabs is outside this capped pilot. Select local or Gemini narration.",
     );
-  if (
-    process.env.CAPTIONS_PROVIDER === "assemblyai" &&
-    !process.env.ASSEMBLYAI_API_KEY
-  )
+  if (captions === "assemblyai" && !process.env.ASSEMBLYAI_API_KEY)
     throw new Error("AssemblyAI captions need ASSEMBLYAI_API_KEY.");
-  if (
-    (provider === "gemini" || process.env.CAPTIONS_PROVIDER === "assemblyai") &&
-    !store
-  )
+  if ((provider === "gemini" || captions === "assemblyai") && !store)
     throw new Error("Paid media requires the persistent pilot ledger.");
   const voiceEvent =
     provider === "gemini"
@@ -319,6 +329,7 @@ export async function renderStory(
           a
             ? (await readFile(path.join(dataDir, a.file))).toString("base64")
             : undefined,
+          options.privatePreview,
         ),
       );
     };
@@ -344,6 +355,7 @@ export async function renderStory(
         story,
         store,
         voiceEvent,
+        provider,
       );
       if (!Number.isFinite(duration) || duration <= 0 || duration > 90)
         throw new Error(
@@ -430,9 +442,10 @@ export async function renderStory(
       });
       offset += clipDuration;
     }
-    if (offset < 60 || offset > 90)
+    const minDuration = story.format === "brief" ? 20 : 60;
+    if (offset < minDuration || offset > 90)
       throw new Error(
-        `Narration is ${offset.toFixed(1)} seconds. Adjust script or pronunciations to reach 60–90 seconds, then render again.`,
+        `Narration is ${offset.toFixed(1)} seconds. Adjust script or pronunciations to reach ${minDuration}–90 seconds, then render again.`,
       );
     if (voiceEvent) {
       voiceEvent.state = "succeeded";
@@ -473,15 +486,17 @@ export async function renderStory(
     const finalDuration = Number(finalProbe.stdout.trim());
     if (
       !Number.isFinite(finalDuration) ||
-      finalDuration < 60 ||
+      finalDuration < minDuration ||
       finalDuration > 90
     )
-      throw new Error("Final video duration falls outside 60–90 seconds.");
+      throw new Error(
+        `Final video duration falls outside ${minDuration}–90 seconds.`,
+      );
     offset = finalDuration;
     let captionTiming =
       "Estimated word groups within measured scene audio; review against playback.";
     let captionWarnings: string[] = [];
-    if (process.env.CAPTIONS_PROVIDER === "assemblyai") {
+    if (captions === "assemblyai") {
       await progress("Aligning captions with AssemblyAI word timestamps");
       captionEvent = await reserve(
         store!,
@@ -549,7 +564,10 @@ export async function renderStory(
       eventAt: story.eventAt,
       createdAt: now(),
       duration: offset,
-      voice: voiceLabel(),
+      voice: voiceLabel(provider),
+      format: story.format || "explainer",
+      privatePreview: !!options.privatePreview,
+      warnings: options.privatePreview ? story.automation?.warnings || [] : [],
       captionTiming,
       captionWarnings,
       sourcePage: `${process.env.PUBLIC_BASE_URL || "http://localhost:4310"}/s/${story.id.slice(0, 8)}?v=${story.version}`,
@@ -572,6 +590,8 @@ export async function renderStory(
       duration: offset,
       createdAt: now(),
       voice: manifest.voice,
+      privatePreview: manifest.privatePreview,
+      warnings: manifest.warnings,
       captionTiming,
       captionWarnings,
     };
