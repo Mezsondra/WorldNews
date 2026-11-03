@@ -6,9 +6,15 @@ The local API pilot supports Claude analysis and drafts, Gemini narration, Assem
 
 ## Run locally
 
-Automatic previews now include [related archive/context photo discovery](docs/AUTOMATIC_VISUALS.md), with visible photo dates, creator/license credits and preserved source records. Existing previews can find photos and rebuild from the Preview screen. Sixty checks passed for the photo-discovery update, including source relevance, license metadata and safe image downloads.
+The optional [MoneyPrinterTurbo renderer](docs/MONEYPRINTERTURBO.md) adds full-frame footage, photo motion, timed on-screen captions and source credits. Run `npm run media:setup`, then choose it under **Preview → Video renderer** and build a comparison preview. Existing exports remain available.
 
-New stories can run **research → source-linked narration → private video** automatically. Existing dossiers have **Make video automatically** in Research. Automatic previews use local narration, preserve unresolved evidence warnings, and require editorial review plus a final render before approval. See [automatic production](docs/AUTOMATIC_PRODUCTION.md).
+Automatic previews now use [source photos, named portraits and video clips](docs/AUTOMATIC_VISUALS.md), with visible photographer/agency/publisher credits and original source records. Existing previews can find photos and videos and rebuild from the Preview screen. Publication dates stay separate from capture dates, manual scene selections are preserved, and source media remains pending review for final production.
+
+Both renderers now add [evidence-linked locators, document highlights, timelines, comparison charts, process diagrams and attributed quotations](docs/VISUAL_PLANNING.md). The planner records each shot's narration, purpose and exact supporting passages, provides reading time and exposes coverage and supported choices in **Preview → Visual timeline**. The standard renderer includes these visuals without Python or extra model calls. Charts require explicit same-unit values, diagrams preserve the source's stated order, and maps never infer incident sites. Conflicting country/city metadata rules out media; it does not authenticate imagery. [Reuse decisions](docs/MEDIA_RIGHTS.md) separately record permission evidence, scope, credit, restrictions and expiry before final production.
+
+New exports include [automatic quality reports and bounded repairs](docs/VIDEO_QUALITY.md) in **Preview**. Checks cover the full-package evidence receipt, visual coverage, caption layout/reading speed, audio levels/silence and complete decoding of the final video. Construction measures the local narration and can repair its length within the existing allowance. Local caption, visual-fallback and audio repairs preserve evidence and speech timing; unresolved results remain held and inspectable. Earlier exports need a current passing report before final approval.
+
+New stories can run **research → checked story package → private video** automatically. Existing dossiers have **Research & build full story** in Research. The builder uses exact passages, bounded missing-context research, explicit source-origin relationships and separate checking of the headline, narration, planned callouts and publishing description. It reserves US$2.50 within the existing pilot allowance; a free extractive preparation path remains available. Automatic previews use local narration, preserve unresolved evidence warnings, and require editorial review plus a final render before approval. See [full-story construction](docs/STORY_CONSTRUCTION.md) and [automatic production](docs/AUTOMATIC_PRODUCTION.md).
 
 Requires Node **24.13+**, npm, FFmpeg/ffprobe, and either macOS `say` or Linux `espeak-ng`. The installed local Node 25 and FFmpeg were used for verification.
 
@@ -44,10 +50,11 @@ With the configured APIs, Research → Editorial assistant can analyze attached 
 ## Editorial checks
 
 - Every narration segment needs linked claims and inspectable supporting passages.
-- Single-source statements require primary-source attribution. Established facts require at least two distinct recorded source lineages.
+- Single-source statements require primary-source attribution; eligible secondary reporting retains explicit publisher attribution. Established facts require at least two independent recorded origins. Shared reporting keys, derivation links, identical snapshots and matching publisher hosts conservatively count together; unknown origins do not establish independence. Legacy records retain their lineage fallback.
+- Constructed packages require a current separate evidence-check receipt for the headline, summary, narration, planned on-screen assertions and publishing text. Material content/evidence changes invalidate it. Separate passes on the same model remain provisional and do not certify truth.
 - Insufficient evidence, allegations, analysis, unresolved contradictions, missing translations, invalid dates, missing media provenance, and missing media rights block production.
 - All exports require human approval. Structural checks cannot decide truth, identify a mistranslation, infer source independence, detect an unrelated photo, or verify that attribution is sufficient. The editor must assess those questions, including sensitive claims and names, figures, dates, and quotations.
-- Scripts must contain 140–205 words; measured narration must last 60–90 seconds. Long scripts fail rather than silently speeding up narration or dropping text.
+- Scripts must contain 140–205 words; measured narration must last 60–90 seconds, excluding closing references. Both renderers append every used reporting source on readable, paginated eight-second cards. Total video length is bounded to 120 seconds. Short findings stop for more supported context; the old brief format cannot bypass the minimum. Earlier exports remain accessible but require a new compliant render before approval.
 - Changes to retrieved source text create a new revision and invalidate approval. Source rechecks are manual in this milestone.
 
 ## Architecture and deployment
@@ -65,7 +72,7 @@ The dashboard listens on loopback by default. Non-loopback Node hosting requires
 
 ## Verification
 
-The suite has **64 tests**, including the disposable PostgreSQL checks, plus TypeScript/Vite build validation. The Poland dossier produced a **35.469971-second** 1080×1920 H.264/AAC private preview from three eligible findings, with no additional API reservation. FFmpeg decoded the output without errors and browser QA confirmed the video loads.
+The current suite has **147 tests**: 145 passed and two optional PostgreSQL checks were skipped in the latest local run. TypeScript/Vite build validation passed. The [3 November trial](docs/QUALITY_EVALUATION_2026-11-03.md) evaluated all six saved dossiers and rendered three eligible copies privately; the three short dossiers were held. It exposed and corrected a France/Germany image mismatch and identified incomplete package checks and weak NASA visual coverage. Both engines also rendered the new templates in a labelled fictional 78.375-second test video. All five final videos decoded completely; phone-size/browser checks passed. No paid provider call, live dossier edit or publication was made. Independent factual evaluation, a varied story set and the unattended operating trial remain pending.
 
 ```sh
 npm test

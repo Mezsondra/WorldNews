@@ -1,4 +1,5 @@
 import test from "node:test";
+import { stubQualityReport } from "./fixtures/quality-report.js";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -14,6 +15,7 @@ import {
   validateUrl,
 } from "../server/fetcher.js";
 import { frame } from "../server/media.js";
+import { productionRecord } from "../server/production-record.js";
 import { sourcePage } from "../server/source-page.js";
 import { startWorker } from "../server/worker.js";
 import type { Story, Job } from "../shared/types.js";
@@ -80,6 +82,7 @@ test("several outlets sharing one lineage do not corroborate a fact", () => {
   s.claims[0].evidence.push({ ...s.claims[0].evidence[0], sourceId: "S2" });
   assert(gates(s).some((g) => g.code === "lineage"));
   s.sources[1].lineage = "Independent institute";
+  s.sources[1].hash = "independent-snapshot";
   assert(!gates(s).some((g) => g.code === "lineage"));
 });
 test("secondary report cannot be relabelled as an original attributed statement", () => {
@@ -367,11 +370,13 @@ test("HTTP workflow: guards, exact approval, public snapshot, edits, and correct
       video: "fixture/video.mp4",
       captions: "fixture/captions.vtt",
       manifest: "fixture/manifest.json",
-      duration: 65,
+      duration: 78,
+      production: productionRecord(s, 70, 70),
       voice: "Test",
       createdAt: now(),
       captionWarnings: ["Recognized number differs from script."],
     });
+    stubQualityReport(s, s.renders[0]);
     await store.save(s, 1);
     assert.equal(
       (

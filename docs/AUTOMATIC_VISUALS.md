@@ -1,25 +1,24 @@
-# Automatic related photos
+# Source photos, portraits and video
 
-Automatic production now searches Wikimedia Commons after preparing narration, downloads suitable photographs, assigns them to empty scene slots, and renders a photo-led layout. Existing stories can use **Preview → Related photos → Find related photos & rebuild preview**. This creates a new version and private video without changing narration or spending AI credits. Manually selected visuals are preserved.
+Automatic production checks the story's attached news reports for photos and video before falling back to Commons context images. Existing stories use **Preview → Photos & source videos → Find photos & videos and rebuild preview**. Rebuilding refreshes automatic selections; explicit manual scene selections are preserved. No AI media or paid media API is used.
 
-This adapter handles **raster photographs**, not automatic news-video footage. It does not copy news-site thumbnails, download social posts, or invent event imagery. Photos are archive/context illustrations, labelled with their recorded creation date. An institutional photo illustrates the institution; it does not prove a reported event occurred.
+## What appears in the preview
 
-## Bounded discovery
+- Source photos retain the photographer/agency credit when supplied, plus the publisher and original report link. The article byline is never silently used as a photo credit.
+- Direct MP4/WebM source videos become muted excerpts of up to 24 seconds. The renderer places actual moving footage in the scene and keeps the story's narration. Publisher framing and watermarks are retained. Embedded-only, DRM, paywall and social video players are not downloaded.
+- Named people in narration or attached reports can receive archive portraits from Commons. Portraits must match the person's name; CEO portraits must also match the organization inferred from the source context when available. Portraits display the person's name and archive date.
+- Scene selection prefers footage, named portraits, people in source photographs and variety. Old automatically selected building photos can be replaced. Uploaded/manual visuals remain available.
+- Publication dates and capture dates are recorded separately. A publisher's publication/upload date is never presented as the date a photograph/video was captured.
+- Credits remain visible in rendered scenes, the media panel, the citation manifest and the source page. Source media stays pending context/reuse review for final production; credit alone is not recorded as a reuse license.
 
-- One Wikimedia query per job, at most 12 candidates, five image-download attempts and three stored photos.
-- Conservative subject matching. The Poland constitutional-crisis resolver seeks exterior/entrance images of its Constitutional Tribunal. Other countries' courts, portraits, protests and exhibitions are excluded. Generic headlines require several distinctive subject terms; ambiguous subjects retain text fallback.
-- JPEG/PNG/WebP only. Metadata must identify a creator, creation date, recognized CC BY/CC BY-SA/CC0/public-domain license and corresponding license URL. Additional restrictions or unsupported license terms exclude the asset.
-- HTTPS downloads only from Wikimedia upload/thumbnail servers, without redirects. Public DNS addresses are validated and pinned. Each image is bounded to 8 MB, 40 megapixels, one raster page, minimum 600×400 resolution, and resized within 1920 pixels.
-- Asset records retain creator, license/URL, Commons source, download URL, retrieval time, downloaded-file SHA-256, date, context and layout changes. The source page and manifest preserve credits. Frames show archive date, creator and license.
+## Retrieval bounds
 
-HTML metadata becomes plain text. Failures and skipped candidates remain visible in a **Visual research** report and preview warnings. Set `MEDIA_DISCOVERY_ENABLED=false` to disable discovery explicitly.
+Source discovery inspects at most eight attached reports, twelve candidates per report, and nine media-download attempts. It stores at most four source photos and two video clips per run. JSON-LD article images and related video objects, Open Graph images, and captioned body figures are supported. Related-story sidebars, unrelated video recommendations, logos, error pages and unsupported URLs are excluded. Sources that cannot be read remain in the visual-research report.
 
-## Editorial review
+Downloads use HTTPS with public-address validation and pinned DNS, including redirects. Images are bounded to 8 MB, 40 megapixels, one raster page, and a minimum 600×350 resolution. Videos are bounded to 60 MB, decoded locally with network protocols disabled, limited to 30 minutes and 9 megapixels, and normalized to muted 24 fps H.264 excerpts. Stored metadata includes the original URL, retrieval time, SHA-256 and transformations. Discovery can be disabled with `MEDIA_DISCOVERY_ENABLED=false`.
 
-Automatic photos remain unreviewed. A private preview can use their recorded license/context provisionally; final production requires **Confirm image identity, context & reuse rights** for each selected discovered image. Editors must verify depiction/source, retain attribution and license links, and satisfy ShareAlike/adaptation obligations. Confirmation creates a new version and invalidates approval; factual claim/source review remains separate.
+Commons raster images retain creator, capture date, license and original file links. The supported licenses remain CC BY, CC BY-SA, CC0 and public domain. When publisher media or a matching portrait is unavailable, the existing conservative place/context search and text fallback remain available.
 
-The adapter uses [MediaWiki Imageinfo](https://www.mediawiki.org/wiki/API:Imageinfo) and follows [Wikimedia reuse guidance](https://commons.wikimedia.org/wiki/Commons:Reusing_content_outside_Wikimedia) and the file's specific [Creative Commons conditions](https://creativecommons.org/licenses/by-sa/3.0/pl/deed.en). Commons availability does not guarantee provenance or editorial suitability.
+## Local verification
 
-## Verified local run
-
-On 1 November 2026, the Poland dossier retrieved two tribunal exterior/entrance photos by **Adrian Grycuk**, dated **22 January 2016**, under **CC BY-SA 3.0 pl**. Both remain archive-labelled and pending media review. The 35.47-second private video was rebuilt without another AI API reservation. The earlier text-only preview remains in history.
+The Binance preview now includes an NBC News clip, a Binance-credited archive photograph of Richard Teng, and a source photograph credited to Romain Doucelin / NurPhoto / picture alliance through DW. The Poland preview includes Bogdan Święczkowski's archive portrait and photographs from the attached reports. Earlier building-only previews remain in version history. No export was approved or published.

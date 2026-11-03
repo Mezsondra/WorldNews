@@ -14,7 +14,10 @@ services:
       retries: 10
     restart: unless-stopped
   app:
-    build: .
+    build:
+      context: .
+      args:
+        INSTALL_MPT: ${MONEYPRINTERTURBO_ENABLED:-0}
     environment: &app-env
       DATABASE_URL: postgresql://worldnews:${POSTGRES_PASSWORD}@database:5432/worldnews
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:?Set DASHBOARD_PASSWORD (24+ characters) in .env}
@@ -48,7 +51,10 @@ services:
       retries: 3
     restart: unless-stopped
   worker:
-    build: .
+    build:
+      context: .
+      args:
+        INSTALL_MPT: ${MONEYPRINTERTURBO_ENABLED:-0}
     command: [npm, run, worker]
     environment: *app-env
     volumes:

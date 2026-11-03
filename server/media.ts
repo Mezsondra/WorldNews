@@ -1,18 +1,11 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import sharp from "sharp";
+import { writeFile } from "node:fs/promises";
 import type { Story, Render, CostEvent } from "../shared/types.js";
-import { dataDir, Store } from "./db.js";
-import { now } from "./domain.js";
-import {
-  geminiSpeech,
-  assemblyCaptions,
-  reserve,
-  captionDifferences,
-  voiceLabel,
-} from "./providers.js";
+import { Store } from "./db.js";
+import { ensureMoneyPrinter } from "./moneyprinterturbo.js";
+import { assertNarrationScript, sourcePageUrl } from "./production-record.js";
+import { geminiSpeech, voiceLabel } from "./providers.js";
 export const exec = promisify(execFile);
 export const escape = (s: string) =>
   s.replace(
@@ -141,7 +134,7 @@ export function frame(
     bodySize -= 1;
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="${height}" viewBox="0 0 1080 ${height}">
     <rect width="1080" height="${height}" fill="#152a26"/>
-    ${background ? `<image href="data:image/png;base64,${background}" x="80" y="${card ? 440 : 650}" width="920" height="${card ? 390 : 560}" preserveAspectRatio="xMidYMid slice"/>` : ""}
+    ${background ? `<image href="data:image/png;base64,${background}" x="80" y="${card ? 440 : 650}" width="920" height="${card ? 390 : 560}" preserveAspectRatio="xMidYMid ${asset?.sourceMedia ? "meet" : "slice"}"/>` : ""}
     <path d="M80 170h920" stroke="#657970" stroke-width="2"/>
     ${svgText("WORLD NEWS", 80, 125, 34, 40, "#eff1e6")}${svgText(story.demo ? "ARCHIVE / DEMO" : "EDITORIAL DRAFT", 690, 125, 21, 35, "#b7cf9a")}
     ${svgText(story.category.toUpperCase() + "   /   " + date, 80, 260, 23, 50, "#b7cf9a")}
@@ -150,19 +143,27 @@ export function frame(
     ${svgText(body, 80, photo ? (card ? 900 : 1320) : card ? 845 : 950, bodySize, Math.floor(900 / (bodySize * 0.55)), "#d9e0d2", "sans-serif", 1.4)}
     ${svgText(publisherLabel, 80, height - 300, 34, 48, "#c8d8b8")}
     ${svgText(dateLabel, 80, height - 245, 30, 53, "#aabbac")}
-    ${asset ? svgText((asset.archive ? "ARCHIVE PHOTO · " : "PHOTO · ") + asset.eventDate + " · " + asset.location.slice(0, 40), 80, photo ? (card ? 420 : 625) : height - 390, 21, 85, "#b7c8a6") : ""}
-    ${asset ? svgText(asset.creator + " · " + asset.permission, 80, card ? 1020 : 1555, 17, 110, "#b7c8a6") : ""}
-    ${svgText((process.env.PUBLIC_BASE_URL || "http://localhost:4310").replace(/^https?:\/\//, "") + "/s/" + story.id.slice(0, 8) + "?v=" + story.version, 80, height - 190, 24, 70, "#e5ebdd")}
+    ${asset ? svgText(asset.sourceMedia ? (asset.mediaType === "video" ? "SOURCE VIDEO EXCERPT" : "SOURCE PHOTO") + " · " + (asset.sourceMedia.captureDate ? "Dated " + asset.sourceMedia.captureDate.slice(0, 10) : "Published " + (asset.sourceMedia.publishedAt?.slice(0, 10) || "date unconfirmed") + " · capture date unconfirmed") : (asset.subject ? asset.subject + " · ARCHIVE PORTRAIT · " : asset.archive ? "ARCHIVE PHOTO · " : "PHOTO · ") + asset.eventDate + " · " + asset.location.slice(0, 40), 80, photo ? (card ? 420 : 625) : height - 390, 21, 85, "#b7c8a6") : ""}
+    ${asset ? svgText(asset.sourceMedia ? "Credit: " + asset.sourceMedia.credit + " · via " + asset.sourceMedia.publisher : asset.creator + " · " + asset.permission, 80, card ? 1020 : 1555, 20, 105, "#c8d8b8") : ""}
+    ${svgText(sourcePageUrl(story).replace(/^https?:\/\//, ""), 80, height - 190, 24, 70, "#e5ebdd")}
     ${svgText(story.demo ? "HISTORICAL SAMPLE · NOT CURRENT NEWS" : privatePreview ? "PRIVATE PREVIEW · EDITORIAL REVIEW PENDING" : "DRAFT · EDITORIAL APPROVAL REQUIRED", 80, height - 115, 22, 70, "#adc594")}
     ${!card ? svgText(String(segmentIndex + 1).padStart(2, "0") + " / " + String(story.segments.length).padStart(2, "0"), 850, height - 115, 22, 15, "#adc594") : ""}
   </svg>`;
 }
 function pronounce(text: string, story: Story) {
-  for (const [from, to] of Object.entries(story.pronunciations))
+  for (const [from, to] of Object.entries(story.pronunciations).sort(
+    ([a], [b]) => a.localeCompare(b),
+  ))
     text = text.split(from).join(to);
   return text;
 }
-async function narration(
+export function narrationCharacters(story: Story) {
+  return story.segments.reduce(
+    (n, s) => n + pronounce(s.text, story).length,
+    0,
+  );
+}
+export async function narration(
   text: string,
   file: string,
   story: Story,
@@ -260,10 +261,6 @@ async function narration(
   ]);
   return Number(stdout.trim());
 }
-const timestamp = (n: number) => {
-  const ms = Math.round(n * 1000);
-  return `${String(Math.floor(ms / 3600000)).padStart(2, "0")}:${String(Math.floor(ms / 60000) % 60).padStart(2, "0")}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}.${String(ms % 1000).padStart(3, "0")}`;
-};
 export async function renderStory(
   story: Story,
   progress: (value: string) => Promise<void>,
@@ -274,20 +271,28 @@ export async function renderStory(
     privatePreview?: boolean;
   } = {},
 ): Promise<Render> {
-  const provider = options.tts || process.env.TTS_PROVIDER || "local";
+  assertNarrationScript(story);
+  const provider =
+    options.tts ||
+    story.narrationProvider ||
+    process.env.TTS_PROVIDER ||
+    "local";
+  const renderer = story.videoRenderer || "classic";
+  if (renderer === "moneyprinterturbo") await ensureMoneyPrinter();
   const captions =
-    options.captions || process.env.CAPTIONS_PROVIDER || "estimated";
+    options.captions ||
+    story.captionProvider ||
+    process.env.CAPTIONS_PROVIDER ||
+    "estimated";
   if (
     options.privatePreview &&
-    (provider !== "local" || captions !== "estimated")
+    ((captions !== "estimated" && options.captions !== "assemblyai") ||
+      (provider !== "local" && options.tts !== "gemini"))
   )
     throw new Error(
-      "Automatic private previews use local narration and estimated captions only.",
+      "Private previews require an explicit Gemini selection for paid narration and explicit AssemblyAI selection for aligned captions.",
     );
-  const paidChars = story.segments.reduce(
-    (n, s) => n + pronounce(s.text, story).length,
-    0,
-  );
+  const paidChars = narrationCharacters(story);
   if (
     ["elevenlabs", "gemini"].includes(provider) &&
     paidChars > Number(process.env.MAX_PAID_CHARACTERS_PER_RENDER || 1500)
@@ -312,299 +317,23 @@ export async function renderStory(
     throw new Error("AssemblyAI captions need ASSEMBLYAI_API_KEY.");
   if ((provider === "gemini" || captions === "assemblyai") && !store)
     throw new Error("Paid media requires the persistent pilot ledger.");
-  const voiceEvent =
-    provider === "gemini"
-      ? await reserve(store!, story, "gemini", "narration", 1)
-      : undefined;
-  let captionEvent: CostEvent | undefined;
-  try {
-    const relative = `renders/${story.id}/v${story.version}`,
-      dir = path.join(dataDir, relative);
-    await mkdir(dir, { recursive: true });
-    const image = async (i: number, h: number) => {
-      const a = story.assets.find((a) => a.id === story.segments[i]?.assetId);
-      return Buffer.from(
-        frame(
-          story,
-          i,
-          h,
-          a
-            ? (await readFile(path.join(dataDir, a.file))).toString("base64")
-            : undefined,
-          options.privatePreview,
-        ),
-      );
-    };
-    await sharp(await image(0, 1350))
-      .png()
-      .toFile(path.join(dir, "card.png"));
-    await sharp(await image(0, 1920))
-      .png()
-      .toFile(path.join(dir, "story.png"));
-    const scenes: any[] = [];
-    let offset = 0;
-    const cues: string[] = [];
-    for (let i = 0; i < story.segments.length; i++) {
-      await progress(
-        `Narrating and rendering scene ${i + 1} of ${story.segments.length}`,
-      );
-      const segment = story.segments[i];
-      const wav = path.join(dir, `scene-${i}.wav`),
-        png = path.join(dir, `scene-${i}.png`);
-      const duration = await narration(
-        segment.text,
-        wav,
-        story,
-        store,
-        voiceEvent,
-        provider,
-      );
-      if (!Number.isFinite(duration) || duration <= 0 || duration > 90)
-        throw new Error(
-          "Scene audio duration is invalid; no automatic retry was made.",
-        );
-      await sharp(await image(i, 1920))
-        .png()
-        .toFile(png);
-      await exec(
-        "ffmpeg",
-        [
-          "-y",
-          "-loop",
-          "1",
-          "-framerate",
-          "12",
-          "-i",
-          png,
-          "-i",
-          wav,
-          "-t",
-          duration.toFixed(3),
-          "-c:v",
-          "libx264",
-          "-preset",
-          "ultrafast",
-          "-crf",
-          "24",
-          "-threads",
-          "2",
-          "-pix_fmt",
-          "yuv420p",
-          "-c:a",
-          "aac",
-          "-ar",
-          "48000",
-          "-ac",
-          "1",
-          "-b:a",
-          "128k",
-          "-movflags",
-          "+faststart",
-          path.join(dir, `scene-${i}.mp4`),
-        ],
-        { timeout: 180000, maxBuffer: 2_000_000 },
-      );
-      const sourceIds = [
-        ...new Set(
-          segment.claimIds.flatMap((cid) =>
-            story.claims
-              .find((c) => c.id === cid)!
-              .evidence.map((e) => e.sourceId),
-          ),
-        ),
-      ];
-      const words = segment.text.split(/\s+/);
-      for (let j = 0; j < words.length; j += 8) {
-        const end = Math.min(j + 8, words.length);
-        cues.push(
-          `${timestamp(offset + (duration * j) / words.length)} --> ${timestamp(offset + (duration * end) / words.length)}\n${words.slice(j, end).join(" ")}`,
-        );
-      }
-      const clip = await exec("ffprobe", [
-        "-v",
-        "error",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "csv=p=0",
-        path.join(dir, `scene-${i}.mp4`),
-      ]);
-      const clipDuration = Number(clip.stdout.trim());
-      if (!Number.isFinite(clipDuration) || clipDuration <= 0)
-        throw new Error("Rendered scene duration is invalid.");
-      scenes.push({
-        segmentId: segment.id,
-        text: segment.text,
-        claimIds: segment.claimIds,
-        sourceIds,
-        assetId: segment.assetId || null,
-        start: offset,
-        end: offset + clipDuration,
-        narrationDuration: duration,
-      });
-      offset += clipDuration;
-    }
-    const minDuration = story.format === "brief" ? 20 : 60;
-    if (offset < minDuration || offset > 90)
-      throw new Error(
-        `Narration is ${offset.toFixed(1)} seconds. Adjust script or pronunciations to reach ${minDuration}–90 seconds, then render again.`,
-      );
-    if (voiceEvent) {
-      voiceEvent.state = "succeeded";
-      await store!.finishCost(voiceEvent);
-    }
-    await progress("Assembling video, captions and citation manifest");
-    await writeFile(
-      path.join(dir, "concat.txt"),
-      scenes.map((_, i) => `file 'scene-${i}.mp4'`).join("\n"),
+  const { renderEditorialVideo } = await import("./editorial-video.js");
+  return renderEditorialVideo(story, progress, store, {
+    provider,
+    captions,
+    privatePreview: !!options.privatePreview,
+    renderer,
+  });
+}
+
+export function sameNarration(a: Story, b: Story) {
+  const pronunciations = (s: Story) =>
+    JSON.stringify(
+      Object.entries(s.pronunciations).sort(([a], [b]) => a.localeCompare(b)),
     );
-    await exec(
-      "ffmpeg",
-      [
-        "-y",
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        path.join(dir, "concat.txt"),
-        "-c",
-        "copy",
-        "-movflags",
-        "+faststart",
-        path.join(dir, "video.mp4"),
-      ],
-      { timeout: 60000, maxBuffer: 2_000_000 },
-    );
-    const finalProbe = await exec("ffprobe", [
-      "-v",
-      "error",
-      "-show_entries",
-      "format=duration",
-      "-of",
-      "csv=p=0",
-      path.join(dir, "video.mp4"),
-    ]);
-    const finalDuration = Number(finalProbe.stdout.trim());
-    if (
-      !Number.isFinite(finalDuration) ||
-      finalDuration < minDuration ||
-      finalDuration > 90
-    )
-      throw new Error(
-        `Final video duration falls outside ${minDuration}–90 seconds.`,
-      );
-    offset = finalDuration;
-    let captionTiming =
-      "Estimated word groups within measured scene audio; review against playback.";
-    let captionWarnings: string[] = [];
-    if (captions === "assemblyai") {
-      await progress("Aligning captions with AssemblyAI word timestamps");
-      captionEvent = await reserve(
-        store!,
-        story,
-        "assemblyai",
-        "captions",
-        0.1,
-      );
-      const audioFile = path.join(dir, "caption-audio.wav");
-      await exec(
-        "ffmpeg",
-        [
-          "-y",
-          "-i",
-          path.join(dir, "video.mp4"),
-          "-vn",
-          "-ar",
-          "16000",
-          "-ac",
-          "1",
-          audioFile,
-        ],
-        { timeout: 60000 },
-      );
-      const transcript = await assemblyCaptions(
-        store!,
-        captionEvent,
-        await readFile(audioFile),
-      );
-      if (
-        transcript.words.some(
-          (w, i) =>
-            w.end < w.start ||
-            w.end > Math.ceil(offset * 1000) + 2000 ||
-            (i > 0 && w.start < transcript.words[i - 1].start),
-        )
-      )
-        throw new Error("AssemblyAI returned invalid word timings.");
-      cues.length = 0;
-      for (let i = 0; i < transcript.words.length; i += 8) {
-        const group = transcript.words.slice(i, i + 8);
-        cues.push(
-          `${timestamp(group[0].start / 1000)} --> ${timestamp(group.at(-1)!.end / 1000)}\n${group.map((w) => w.text).join(" ")}`,
-        );
-      }
-      captionTiming =
-        "AssemblyAI word timestamps; transcript compared with the script and requires editorial review.";
-      captionWarnings = captionDifferences(
-        story.segments.map((s) => s.text).join(" "),
-        transcript.words,
-      );
-      await writeFile(
-        path.join(dir, "transcript.json"),
-        JSON.stringify({ ...transcript, captionWarnings }, null, 2),
-      );
-    }
-    await writeFile(
-      path.join(dir, "captions.vtt"),
-      "WEBVTT\n\n" + cues.join("\n\n") + "\n",
-    );
-    const manifest = {
-      storyId: story.id,
-      version: story.version,
-      title: story.title,
-      eventAt: story.eventAt,
-      createdAt: now(),
-      duration: offset,
-      voice: voiceLabel(provider),
-      format: story.format || "explainer",
-      privatePreview: !!options.privatePreview,
-      warnings: options.privatePreview ? story.automation?.warnings || [] : [],
-      captionTiming,
-      captionWarnings,
-      sourcePage: `${process.env.PUBLIC_BASE_URL || "http://localhost:4310"}/s/${story.id.slice(0, 8)}?v=${story.version}`,
-      scenes,
-      sources: story.sources.map(({ text, ...s }) => s),
-      claims: story.claims,
-      assets: story.assets,
-    };
-    await writeFile(
-      path.join(dir, "manifest.json"),
-      JSON.stringify(manifest, null, 2),
-    );
-    return {
-      version: story.version,
-      card: `${relative}/card.png`,
-      story: `${relative}/story.png`,
-      video: `${relative}/video.mp4`,
-      captions: `${relative}/captions.vtt`,
-      manifest: `${relative}/manifest.json`,
-      duration: offset,
-      createdAt: now(),
-      voice: manifest.voice,
-      privatePreview: manifest.privatePreview,
-      warnings: manifest.warnings,
-      captionTiming,
-      captionWarnings,
-    };
-  } catch (error) {
-    for (const event of [voiceEvent, captionEvent])
-      if (event && event.state === "reserved") {
-        event.state = "uncertain";
-        event.note =
-          "Render interrupted. Reservation retained; inspect outputs and provider usage before another revision.";
-        await store!.finishCost(event);
-      }
-    throw error;
-  }
+  return (
+    JSON.stringify(a.segments.map((s) => s.text)) ===
+      JSON.stringify(b.segments.map((s) => s.text)) &&
+    pronunciations(a) === pronunciations(b)
+  );
 }

@@ -40,7 +40,7 @@ export function validateUrl(value: string) {
     throw new Error("Private network sources are blocked.");
   return url;
 }
-type Kind = "page" | "image" | "feed";
+type Kind = "page" | "image" | "video" | "feed";
 async function request(
   url: URL,
   kind: Kind = "page",
@@ -74,6 +74,7 @@ async function request(
           Accept: {
             page: "text/html,text/plain",
             image: "image/jpeg,image/png,image/webp",
+            video: "video/mp4,video/webm",
             feed: "application/rss+xml,application/atom+xml,application/xml,text/xml",
           }[kind],
           "Accept-Encoding": "identity",
@@ -103,6 +104,7 @@ async function request(
           !{
             page: /text\/(html|plain)|application\/xhtml\+xml/,
             image: /^image\/(jpeg|png|webp)(;|$)/i,
+            video: /^video\/(mp4|webm)(;|$)/i,
             feed: /xml/i,
           }[kind].test(res.headers["content-type"] || "")
         ) {
@@ -116,17 +118,33 @@ async function request(
           );
           return;
         }
-        const image = kind === "image";
+        const image = kind === "image" || kind === "video";
+        const limit =
+          kind === "video" ? 60_000_000 : image ? 8_000_000 : 2_000_000;
+        if (Number(res.headers["content-length"]) > limit) {
+          res.destroy();
+          reject(
+            new Error(
+              `Source ${kind} exceeds the ${limit / 1_000_000} MB retrieval limit.`,
+            ),
+          );
+          return;
+        }
         let bytes = 0;
         const chunks: Buffer[] = [];
         res.on("data", (chunk: Buffer) => {
           bytes += chunk.length;
-          if (bytes > (image ? 8_000_000 : 2_000_000)) {
+          if (
+            bytes >
+            (kind === "video" ? 60_000_000 : image ? 8_000_000 : 2_000_000)
+          ) {
             req.destroy(
               new Error(
-                image
-                  ? "Image exceeds the 8 MB retrieval limit."
-                  : "Source exceeds the 2 MB retrieval limit.",
+                kind === "video"
+                  ? "Video exceeds the 60 MB retrieval limit."
+                  : image
+                    ? "Image exceeds the 8 MB retrieval limit."
+                    : "Source exceeds the 2 MB retrieval limit.",
               ),
             );
             return;
@@ -145,7 +163,7 @@ async function request(
     );
     const deadline = setTimeout(
       () => req.destroy(new Error("Source retrieval exceeded 15 seconds.")),
-      15000,
+      kind === "video" ? 45000 : 15000,
     );
     req.on("close", () => clearTimeout(deadline));
     req.on("error", reject);
@@ -170,6 +188,28 @@ export async function retrieveWikimediaImage(value: string) {
   if (result.location || !result.bytes)
     throw new Error("Media redirect or empty image rejected.");
   return result.bytes;
+}
+export async function retrieveSourceMedia(
+  value: string,
+  kind: "image" | "video",
+) {
+  let url = validateUrl(value);
+  for (let i = 0; i < 4; i++) {
+    if (url.protocol !== "https:")
+      throw new Error("Source media must use HTTPS.");
+    const result = await request(url, kind);
+    if (result.location) {
+      url = validateUrl(new URL(result.location, url).href);
+      continue;
+    }
+    if (!result.bytes?.length) throw new Error("Empty source media.");
+    return result.bytes;
+  }
+  throw new Error("Too many media redirects.");
+}
+export async function retrieveMediaPage(value: string) {
+  await assertRobots(value);
+  return follow(value);
 }
 // RFC 9309: our group if named, else "*"; longest matching rule wins, Allow wins ties.
 export function robotsAllows(

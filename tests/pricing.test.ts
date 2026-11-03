@@ -122,6 +122,52 @@ test("pricing: Claude tokens, cache and web searches; Gemini text, thinking and 
   assert.equal(actualUsd(event({})), undefined);
 });
 
+test("construction usage prices all completed calls and keeps incomplete usage unpriced", () => {
+  const calls = [
+    { stage: "writer-1", usage: { input_tokens: 1000, output_tokens: 500 } },
+    { stage: "checker-1", usage: { input_tokens: 2000, output_tokens: 700 } },
+  ];
+  close(
+    actualUsd(
+      event({
+        operation: "story-construction",
+        usage: { constructionCalls: calls, completedCalls: 2 },
+      }),
+    ),
+    (3000 * 3) / 1e6 + (1200 * 15) / 1e6,
+  );
+  assert.equal(
+    actualUsd(
+      event({
+        operation: "story-construction",
+        usage: { constructionCalls: calls },
+      }),
+    ),
+    undefined,
+  );
+  assert.equal(
+    actualUsd(
+      event({
+        operation: "story-construction",
+        usage: { constructionCalls: calls, completedCalls: 3 },
+      }),
+    ),
+    undefined,
+  );
+  assert.equal(
+    actualUsd(
+      event({
+        operation: "story-construction",
+        usage: {
+          constructionCalls: [{ stage: "writer-1", usage: undefined }],
+          completedCalls: 1,
+        },
+      }),
+    ),
+    undefined,
+  );
+});
+
 test("settlement: releases unused allowance once, keeps uncertain calls, records overruns, backfills on start", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "worldnews-cost-"));
   const filename = path.join(dir, "db.sqlite");

@@ -33,7 +33,14 @@ export function actualUsd(event: CostEvent): number | undefined {
       ? n(usage.audioSeconds) * ASSEMBLYAI_PER_SECOND
       : undefined;
   let parts: unknown[];
-  if (Array.isArray(usage.requests)) {
+  if (Array.isArray(usage.constructionCalls)) {
+    if (
+      !usage.constructionCalls.length ||
+      usage.constructionCalls.length !== n(usage.completedCalls)
+    )
+      return;
+    parts = usage.constructionCalls.map((call: any) => call?.usage);
+  } else if (Array.isArray(usage.requests)) {
     // Narration records one entry per scene; an incomplete record cannot be priced.
     if (usage.requests.length !== n(usage.scenes)) return;
     parts = usage.requests.map((r: any) => r?.usage);

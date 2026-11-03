@@ -3,5 +3,7 @@ dist
 data
 .env
 .git
+.tools
+__pycache__
 test-results
 playwright-report

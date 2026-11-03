@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import * as cheerio from "cheerio";
 import sharp from "sharp";
 import type { Asset, Story } from "../shared/types.js";
+import { mediaGeographyCompatible } from "./media-context.js";
+import { mediaRightsIssues } from "./media-rights.js";
 import { dataDir, Store } from "./db.js";
 import { id, invalidate, now } from "./domain.js";
 import {
@@ -11,6 +13,7 @@ import {
   validateWikimediaImageUrl,
 } from "./fetcher.js";
 import { json, type Fetcher } from "./providers.js";
+import { discoverSourceVisuals } from "./source-media.js";
 
 export interface VisualFocus {
   query: string;
@@ -18,6 +21,8 @@ export interface VisualFocus {
   location: string;
   institution?: boolean;
   place?: boolean;
+  person?: string;
+  affiliation?: string;
 }
 export interface VisualResult {
   assets: Asset[];
@@ -142,14 +147,22 @@ export function commonsCandidate(
     subject = normalize(page.title + " " + description);
   // Old demonstrations, unrelated people and disputed-event imagery are not safe generic background.
   if (
-    /protest|demonstration|rally|riot|battle|massacre|\bportrait\b|\bmap\b|\blogo\b|\bflag\b/i.test(
+    /protest|demonstration|rally|riot|battle|massacre|\bmap\b|\blogo\b|\bflag\b/i.test(
       subject,
-    )
+    ) ||
+    (!focus.person && /\bportrait\b/i.test(subject))
   )
     throw new Error(
       "Event/portrait/graphic imagery needs deliberate editorial selection",
     );
-  if (focus.institution) {
+  if (focus.person) {
+    if (!subject.includes(normalize(focus.person)))
+      throw new Error("Portrait does not identify the named person");
+    if (focus.affiliation && !subject.includes(normalize(focus.affiliation)))
+      throw new Error(
+        "Portrait does not establish the person's organization; possible namesake",
+      );
+  } else if (focus.institution) {
     if (
       !/polish|poland|warsaw|warszaw/.test(subject) ||
       !/constitutional tribunal|trybunal konstytucyjny/.test(subject) ||
@@ -226,6 +239,7 @@ export function commonsCandidate(
   const sourceUrl = `https://commons.wikimedia.org/?curid=${page.pageid}`;
   return {
     creator,
+    subject: focus.person,
     permission: license,
     provenance: sourceUrl,
     eventDate: date,
@@ -253,8 +267,9 @@ export async function discoverVisuals(
   story: Story,
   request: Fetcher = fetch,
   download = retrieveWikimediaImage,
+  selectedFocuses?: VisualFocus[],
 ): Promise<VisualResult> {
-  const focuses = visualFocuses(story);
+  const focuses = selectedFocuses || visualFocuses(story);
   const result: VisualResult = {
     assets: [],
     warnings: [],
@@ -412,15 +427,60 @@ export async function discoverVisuals(
 }
 
 export function attachDiscoveredVisuals(story: Story, result: VisualResult) {
-  const images = [...story.assets.filter((a) => a.discovery), ...result.assets];
+  const images = [
+    ...result.assets,
+    ...story.assets.filter((a) => a.sourceMedia || a.discovery),
+  ];
+  const uses = new Map<string, number>();
+  let previous = "";
   return {
     ...story,
     assets: [...story.assets, ...result.assets],
-    segments: story.segments.map((scene, index) =>
-      scene.assetId || !images.length
-        ? scene
-        : { ...scene, assetId: images[index % images.length].id },
-    ),
+    segments: story.segments.map((scene, index) => {
+      const current = story.assets.find((a) => a.id === scene.assetId);
+      // Keep deliberate manual selections; refresh old automatic building shots.
+      if (
+        scene.visualSelection === "manual" ||
+        (scene.assetId &&
+          (!current || (!current.discovery && !current.sourceMedia))) ||
+        !images.length
+      )
+        return scene;
+      const terms = normalize(scene.text).match(/[\p{L}\p{N}]{4,}/gu) || [];
+      const sourceIds = new Set(
+        scene.claimIds.flatMap(
+          (cid) =>
+            story.claims
+              .find((c) => c.id === cid)
+              ?.evidence.map((e) => e.sourceId) || [],
+        ),
+      );
+      const score = (asset: Asset) => {
+        const text = normalize(
+          (asset.sourceMedia?.title || asset.discovery?.title || "") +
+            " " +
+            asset.context,
+        );
+        return (
+          (asset.subject ? 24 : asset.sourceMedia ? 15 : 0) +
+          (asset.sourceMedia?.people ? 8 : 0) +
+          terms.filter((t) => text.includes(t)).length +
+          (sourceIds.has(asset.sourceMedia?.sourceId || "") ? 3 : 0) +
+          (asset.mediaType === "video" && index === 0 ? 12 : 0) -
+          (uses.get(asset.id) || 0) * 20 -
+          (asset.id === previous ? 25 : 0)
+        );
+      };
+      const asset = images.filter(a => mediaGeographyCompatible(a, scene.text) && !mediaRightsIssues(a, "private-preview").length).sort((a, b) => score(b) - score(a))[0];
+      if (!asset) return { ...scene, assetId: undefined, visualSelection: "automatic" as const };
+      uses.set(asset.id, (uses.get(asset.id) || 0) + 1);
+      previous = asset.id;
+      return {
+        ...scene,
+        assetId: asset.id,
+        visualSelection: "automatic" as const,
+      };
+    }),
     automation: story.automation
       ? {
           ...story.automation,
@@ -430,8 +490,71 @@ export function attachDiscoveredVisuals(story: Story, result: VisualResult) {
   };
 }
 
+export function peopleFocuses(story: Story): VisualFocus[] {
+  const text =
+    story.segments.map((s) => s.text).join(" ") +
+    " " +
+    story.sources.map((s) => s.text).join(" ");
+  const matches = [
+    ...text.matchAll(
+      /\b(CEO|co-CEO|[Pp]resident|[Mm]inister|[Jj]udge|[Ll]eader)\s+([\p{Lu}][\p{L}\p{M}’'-]+(?:\s+[\p{Lu}][\p{L}\p{M}’'-]+){1,2})/gu,
+    ),
+  ];
+  matches.sort((a, b) => Number(/CEO/.test(b[1])) - Number(/CEO/.test(a[1])));
+  const seen = new Set<string>();
+  return matches
+    .filter((m) => {
+      if (seen.has(m[2])) return false;
+      seen.add(m[2]);
+      return true;
+    })
+    .slice(0, 2)
+    .map((match) => {
+      const person = match[2];
+      const preceding = text.slice(Math.max(0, match.index! - 60), match.index);
+      const affiliation = /CEO/.test(match[1])
+        ? preceding.match(/([\p{Lu}][\p{L}\p{N}-]+)\s+$/u)?.[1] ||
+          headlineSubjects(story.title).at(-1)
+        : undefined;
+      return {
+        person,
+        affiliation,
+        query: `"${person}" ${affiliation ? '"' + affiliation + '" ' : ""}filetype:bitmap -caricature -logo`,
+        terms: normalize(person).split(/\s+/),
+        location: story.region || "Location unconfirmed",
+      };
+    });
+}
+
+export async function discoverStoryMedia(story: Story): Promise<VisualResult> {
+  const source = await discoverSourceVisuals(story);
+  const people = peopleFocuses(story);
+  if (people.length && !story.assets.some((a) => a.subject)) {
+    const portraits = await discoverVisuals(
+      story,
+      fetch,
+      retrieveWikimediaImage,
+      people,
+    );
+    source.assets.push(...portraits.assets);
+    source.candidates.push(...portraits.candidates);
+    source.warnings.push(...portraits.warnings);
+    source.query += " | " + portraits.query;
+  }
+  // Reuse stored source media on later revisions. Commons is a context fallback.
+  if (source.assets.length >= 2 || story.assets.some((a) => a.sourceMedia))
+    return source;
+  const fallback = await discoverVisuals(story);
+  return {
+    assets: [...source.assets, ...fallback.assets],
+    warnings: [...source.warnings, ...fallback.warnings],
+    candidates: [...source.candidates, ...fallback.candidates],
+    query: source.query + " | " + fallback.query,
+  };
+}
+
 export async function addVisualsAndRebuild(store: Store, old: Story) {
-  const result = await discoverVisuals(old);
+  const result = await discoverStoryMedia(old);
   const next = invalidate(attachDiscoveredVisuals(old, result));
   next.automation = {
     enabled: true,
@@ -448,7 +571,7 @@ export async function addVisualsAndRebuild(store: Store, old: Story) {
     kind: "visuals",
     createdAt: now(),
     data: {
-      summary: `${result.assets.length} reusable context photos attached. All are archive-labelled and pending editorial media review.`,
+      summary: `${result.assets.length} photos/video clips attached with source credits. Media review remains pending.`,
       query: result.query,
       candidates: result.candidates,
       cautions: result.warnings,

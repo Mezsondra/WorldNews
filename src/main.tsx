@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Globe2,
@@ -38,6 +38,11 @@ import {
   AutomationPanel,
 } from "./ProviderPanels";
 import { DiscoveryPanel } from "./DiscoveryPanel";
+import { ShotTimeline, VersionCompare } from "./ShotTimeline";
+import { MediaRightsEditor } from "./MediaRights";
+import { QualityPanel } from "./QualityPanel";
+import { PRODUCTION_STANDARD } from "../shared/production";
+import { CONSTRUCTION_POLICY } from "../shared/construction";
 type Page =
   | "Stories"
   | "Research"
@@ -79,6 +84,8 @@ const date = (s: string) =>
 const uid = () => crypto.randomUUID();
 const status = (s: string) => s.replaceAll("-", " ");
 function App() {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [seekTime, setSeekTime] = useState<number | null>(null);
   const [overview, setOverview] = useState<Overview>();
   const [page, setPage] = useState<Page>("Stories");
   const [selected, setSelected] = useState("");
@@ -91,9 +98,21 @@ function App() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("All stories");
   const [preview, setPreview] = useState("Card");
+  useEffect(() => {
+    if (
+      preview === "Video" &&
+      seekTime !== null &&
+      videoRef.current &&
+      videoRef.current.readyState >= 1
+    )
+      videoRef.current.currentTime = seekTime;
+  }, [seekTime, preview]);
   const story =
     overview?.stories.find((s) => s.id === selected) || overview?.stories[0];
   const render = story?.renders.find((r) => r.version === story.version);
+  useEffect(() => {
+    setSeekTime(null);
+  }, [story?.id]);
   const job = overview?.jobs.find(
     (j) =>
       j.storyId === story?.id &&
@@ -121,6 +140,11 @@ function App() {
   async function refresh() {
     const data = await api<Overview>("/overview");
     setOverview(data);
+    setSelected((current) =>
+      data.stories.some((s) => s.id === current)
+        ? current
+        : data.stories[0]?.id || "",
+    );
   }
   useEffect(() => {
     void refresh().catch((e) => setError(e.message));
@@ -835,6 +859,7 @@ function App() {
                                   {[
                                     "supported fact",
                                     "attributed statement",
+                                    "attributed reporting",
                                     "allegation",
                                     "analysis",
                                     "disputed",
@@ -844,6 +869,14 @@ function App() {
                                   ))}
                                 </select>
                               </label>
+                              {c.status === "attributed reporting" && (
+                                <p className="hint">
+                                  Name the supporting outlet in this claim and
+                                  every linked narration segment, for example
+                                  “According to France 24, …”. This remains a
+                                  reported account pending editorial review.
+                                </p>
+                              )}
                               {c.evidence.map((ev, i) => (
                                 <div className="evidence-edit" key={i}>
                                   <div className="two-fields">
@@ -996,6 +1029,7 @@ function App() {
                                           segmentUpdate(s.id, {
                                             assetId:
                                               e.target.value || undefined,
+                                            visualSelection: "manual",
                                           })
                                         }
                                       >
@@ -1004,7 +1038,16 @@ function App() {
                                         </option>
                                         {draft.assets.map((a) => (
                                           <option key={a.id} value={a.id}>
-                                            {a.creator} — {a.context}
+                                            {a.mediaType === "video"
+                                              ? "Video"
+                                              : "Photo"}{" "}
+                                            ·{" "}
+                                            {a.sourceMedia?.title ||
+                                              a.discovery?.title ||
+                                              a.context}{" "}
+                                            —{" "}
+                                            {a.sourceMedia?.publisher ||
+                                              a.creator}
                                           </option>
                                         ))}
                                       </select>
@@ -1049,6 +1092,10 @@ function App() {
                     <aside className="research-inspector">
                       <AutomationPanel
                         story={story}
+                        pilot={overview.pilot}
+                        packageIssues={currentGates
+                          .filter((g) => g.code === "editorial-package")
+                          .map((g) => g.message)}
                         disabled={busy || dirty || !!job}
                         act={act}
                       />
@@ -1160,6 +1207,14 @@ function App() {
                       <div className="preview-media">
                         {preview === "Video" && render ? (
                           <video
+                            ref={videoRef}
+                            onLoadedMetadata={() => {
+                              if (seekTime !== null && videoRef.current)
+                                videoRef.current.currentTime = Math.min(
+                                  seekTime,
+                                  videoRef.current.duration,
+                                );
+                            }}
                             controls
                             preload="metadata"
                             poster={media(render.story)}
@@ -1170,7 +1225,7 @@ function App() {
                               srcLang="en"
                               label="English"
                               src={media(render.captions)}
-                              default
+                              default={render.renderer !== "moneyprinterturbo"}
                             />
                           </video>
                         ) : render ? (
@@ -1197,6 +1252,37 @@ function App() {
                           : "Preview layout · render to export"}
                       </span>
                     </div>
+                    {render && (
+                      <p className="hint">
+                        {render.production?.standard ===
+                        PRODUCTION_STANDARD.version ? (
+                          <>
+                            {render.production.narrationDuration.toFixed(1)}{" "}
+                            seconds of narration ·{" "}
+                            {render.production.sourceIds.length} reporting
+                            sources · closing references after the story.{" "}
+                            <button
+                              className="button"
+                              onClick={() => {
+                                const time =
+                                  render.production!.sourceCards[0].start + 0.1;
+                                if (
+                                  videoRef.current &&
+                                  videoRef.current.readyState >= 1
+                                )
+                                  videoRef.current.currentTime = time;
+                                setPreview("Video");
+                                setSeekTime(time);
+                              }}
+                            >
+                              Watch source ending
+                            </button>
+                          </>
+                        ) : (
+                          "Earlier export · create a new render with at least 60 seconds of narration and complete closing sources before approval."
+                        )}
+                      </p>
+                    )}
                     {render && (
                       <div className="download-row">
                         <a
@@ -1231,6 +1317,65 @@ function App() {
                         </a>
                       </div>
                     )}
+                    {render && (
+                      <QualityPanel
+                        render={render}
+                        onSeek={(time) => {
+                          if (
+                            videoRef.current &&
+                            videoRef.current.readyState >= 1
+                          )
+                            videoRef.current.currentTime = time;
+                          setPreview("Video");
+                          setSeekTime(time);
+                        }}
+                      />
+                    )}
+                    {render?.shots?.length ? (
+                      <ShotTimeline
+                        key={`${story.id}-${story.version}`}
+                        story={story}
+                        render={render}
+                        disabled={
+                          busy ||
+                          !!job ||
+                          dirty ||
+                          [
+                            "held",
+                            "rejected",
+                            "approved",
+                            "producing",
+                          ].includes(story.stage)
+                        }
+                        onSeek={(time) => {
+                          if (
+                            videoRef.current &&
+                            videoRef.current.readyState >= 1
+                          )
+                            videoRef.current.currentTime = time;
+                          setPreview("Video");
+                          setSeekTime(time);
+                        }}
+                        onSave={(override) =>
+                          void act(async () => {
+                            await api(`/stories/${story.id}/renderer`, "POST", {
+                              version: story.version,
+                              renderer:
+                                story.videoRenderer || "moneyprinterturbo",
+                              tts: story.narrationProvider || "local",
+                              captions: story.captionProvider || "estimated",
+                              shotOverrides: [
+                                ...(story.shotOverrides || []).filter(
+                                  (s) => s.id !== override.id,
+                                ),
+                                override,
+                              ],
+                            });
+                            setPreview("Video");
+                          }, "Visual revision queued. Unchanged narration and shots will be reused.")
+                        }
+                      />
+                    ) : null}
                   </section>
                   <aside>
                     <section className="editor-section production-panel">
@@ -1272,6 +1417,135 @@ function App() {
                         {render?.captionTiming ||
                           "Synthetic narration and captions require playback review before approval."}
                       </p>
+                      <form
+                        key={`${story.id}-${story.version}-renderer`}
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          const form = new FormData(e.currentTarget);
+                          void act(async () => {
+                            await api(`/stories/${story.id}/renderer`, "POST", {
+                              version: story.version,
+                              renderer: form.get("renderer"),
+                              tts: form.get("tts"),
+                              captions: form.get("captions"),
+                            });
+                            setPreview("Video");
+                          }, "Comparison preview queued with your selected voice.");
+                        }}
+                      >
+                        <label>
+                          Video renderer
+                          <select
+                            name="renderer"
+                            defaultValue={story.videoRenderer || "classic"}
+                            disabled={busy || !!job || dirty}
+                          >
+                            <option value="classic">
+                              Standard · evidence visuals
+                            </option>
+                            <option
+                              value="moneyprinterturbo"
+                              disabled={
+                                !overview.renderers?.moneyprinterturbo.available
+                              }
+                            >
+                              MoneyPrinterTurbo · footage & captions
+                              {!overview.renderers?.moneyprinterturbo.available
+                                ? " (setup required)"
+                                : ""}
+                            </option>
+                          </select>
+                        </label>
+                        <label>
+                          Narration voice
+                          <select
+                            name="tts"
+                            defaultValue={story.narrationProvider || "local"}
+                            disabled={busy || !!job || dirty}
+                          >
+                            <option value="local">Local · no API cost</option>
+                            <option
+                              value="gemini"
+                              disabled={
+                                !overview.pilot?.enabled ||
+                                !overview.pilot.providers.gemini ||
+                                overview.pilot.remainingUsd < 1
+                              }
+                            >
+                              Gemini · {overview.pilot?.geminiVoice || "Kore"}
+                            </option>
+                          </select>
+                        </label>
+                        <label>
+                          Caption timing
+                          <select
+                            name="captions"
+                            defaultValue={story.captionProvider || "estimated"}
+                            disabled={busy || !!job || dirty}
+                          >
+                            <option value="estimated">
+                              Estimated · no API cost
+                            </option>
+                            <option
+                              value="assemblyai"
+                              disabled={
+                                !overview.pilot?.enabled ||
+                                !overview.pilot.providers.assemblyai ||
+                                overview.pilot.remainingUsd < 0.1
+                              }
+                            >
+                              Speech-aligned · AssemblyAI
+                            </option>
+                          </select>
+                        </label>
+                        <p className="hint">
+                          Shots follow narration beats, with extra reading time
+                          for dated context. New Gemini speech reserves $1; new
+                          aligned captions reserve $0.10. Matching audio,
+                          captions and shots are reused.
+                        </p>
+                        <button
+                          className="button full"
+                          disabled={
+                            busy ||
+                            !!job ||
+                            dirty ||
+                            !story.segments.length ||
+                            [
+                              "held",
+                              "rejected",
+                              "approved",
+                              "producing",
+                            ].includes(story.stage)
+                          }
+                        >
+                          Build comparison preview
+                        </button>
+                      </form>
+                      {(() => {
+                        const previous = [...story.renders]
+                          .reverse()
+                          .find((r) => r.version < story.version);
+                        return previous ? (
+                          <p className="hint">
+                            <a
+                              href={media(previous.video)}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Open previous{" "}
+                              {previous.renderer === "moneyprinterturbo"
+                                ? "MoneyPrinterTurbo"
+                                : "Classic"}{" "}
+                              video · v{previous.version}
+                            </a>
+                          </p>
+                        ) : null;
+                      })()}
+                      <VersionCompare
+                        key={`${story.id}-${story.version}-compare`}
+                        story={story}
+                      />
                       {render?.captionWarnings?.map((warning, i) => (
                         <p className="render-error" key={i}>
                           {warning}
@@ -1283,17 +1557,22 @@ function App() {
                             Automatic private preview · editorial review pending
                           </strong>
                           <br />
-                          {story.format === "brief"
-                            ? "Short update using the currently supported findings."
-                            : "Source-linked narration prepared automatically."}{" "}
-                          Final production requires editorial checks.
+                          Source-linked narration prepared automatically. Final
+                          production requires editorial checks.
                         </p>
                       )}
-                      {render?.warnings?.map((warning, i) => (
-                        <p className="hint" key={`preview-${i}`}>
-                          {warning}
-                        </p>
-                      ))}
+                      {!!render?.warnings?.length && (
+                        <details className="preview-notes">
+                          <summary>
+                            Editorial notes ({render.warnings.length})
+                          </summary>
+                          {render.warnings.map((warning, i) => (
+                            <p className="hint" key={`preview-${i}`}>
+                              {warning}
+                            </p>
+                          ))}
+                        </details>
+                      )}
                       {job ? (
                         <div className="job-progress">
                           <Loader2 className="spin" size={18} />
@@ -1578,6 +1857,7 @@ function App() {
                       title: f.get("title"),
                       research: f.get("research") === "on",
                       autoProduce: f.get("autoProduce") === "on",
+                      buildFullStory: f.get("buildFullStory") === "on",
                       ...(f.get("url") ? { url: f.get("url") } : {}),
                     },
                   );
@@ -1632,6 +1912,29 @@ function App() {
                 <span>
                   Automatically prepare a script and private video after
                   research · local narration
+                </span>
+              </label>
+              <label className="review-checkbox">
+                <input
+                  type="checkbox"
+                  name="buildFullStory"
+                  defaultChecked={
+                    !!overview?.pilot?.enabled &&
+                    !!overview.pilot.providers.claude &&
+                    overview.pilot.remainingUsd >=
+                      CONSTRUCTION_POLICY.allowanceUsd + 1
+                  }
+                  disabled={
+                    !overview?.pilot?.enabled ||
+                    !overview.pilot.providers.claude ||
+                    overview.pilot.remainingUsd <
+                      CONSTRUCTION_POLICY.allowanceUsd
+                  }
+                />
+                <span>
+                  After research, build and separately check a full story · US$
+                  {CONSTRUCTION_POLICY.allowanceUsd.toFixed(2)} from the
+                  existing allowance
                 </span>
               </label>
               <button className="button primary full" disabled={busy}>
@@ -1735,6 +2038,27 @@ function SourcePanel({
                 : "Review source type and originating lineage, then save metadata to confirm."}
             </p>
           )}
+          {s.origin && (
+            <p className="hint">
+              <strong>Reporting origin:</strong> {s.origin.kind} ·{" "}
+              {s.origin.key || "not established"}
+              <br />
+              {s.origin.explanation}
+              {!!s.origin.parentSourceIds.length && (
+                <>
+                  <br />
+                  Based on:{" "}
+                  {s.origin.parentSourceIds
+                    .map(
+                      (id) =>
+                        story.sources.find((source) => source.id === id)
+                          ?.publisher || id,
+                    )
+                    .join(", ")}
+                </>
+              )}
+            </p>
+          )}
           <SourceMetadata
             key={s.id + story.version}
             source={s}
@@ -1806,6 +2130,12 @@ function SourceMetadata({
             api(`/stories/${story.id}/sources/${s.id}`, "PATCH", {
               version: story.version,
               ...Object.fromEntries(f),
+              origin: {
+                kind: f.get("originKind"),
+                key: f.get("originKey"),
+                parentSourceIds: f.getAll("originParents"),
+                explanation: f.get("originExplanation"),
+              },
             }),
           "Source metadata saved. Evidence needs a fresh check.",
         );
@@ -1830,6 +2160,53 @@ function SourceMetadata({
       <label>
         Shared origin / lineage
         <input name="lineage" defaultValue={s.lineage} required />
+      </label>
+      <label>
+        Reporting relationship
+        <select name="originKind" defaultValue={s.origin?.kind || "unknown"}>
+          <option value="unknown">Origin not established</option>
+          <option value="original">Original reporting or document</option>
+          <option value="derived">
+            Quotes, copies or syndicates another account
+          </option>
+        </select>
+      </label>
+      <label>
+        Shared reporting origin
+        <input
+          name="originKey"
+          defaultValue={s.origin?.key || ""}
+          maxLength={200}
+          placeholder="Use the same name for accounts sharing an origin"
+        />
+      </label>
+      <label>
+        Based on these attached sources
+        <select
+          name="originParents"
+          multiple
+          defaultValue={s.origin?.parentSourceIds || []}
+        >
+          {story.sources
+            .filter((source) => source.id !== s.id)
+            .map((source) => (
+              <option key={source.id} value={source.id}>
+                {source.publisher} · {source.title}
+              </option>
+            ))}
+        </select>
+      </label>
+      <label>
+        Why this relationship applies
+        <textarea
+          name="originExplanation"
+          required
+          maxLength={800}
+          defaultValue={
+            s.origin?.explanation ||
+            "Origin not established; further review is needed."
+          }
+        />
       </label>
       <div className="two-fields">
         <label>
@@ -2166,13 +2543,13 @@ function AssetPanel({
   return (
     <section className="editor-section">
       <div className="section-title">
-        <h2>Related photos</h2>
+        <h2>Graphics, photos & source videos</h2>
         <ImagePlus size={18} />
       </div>
       <p className="hint">
-        Automatically find reusable Commons photographs, record credits and
-        dates, and rebuild the private preview. Archive context images are
-        labelled and require review.
+        Find photos and video in the attached news reports, with agency and
+        publisher credits. People and source footage take priority over building
+        shots. Rebuilds update automatically selected visuals.
       </p>
       <button
         className="button"
@@ -2187,11 +2564,11 @@ function AssetPanel({
               api(`/stories/${story.id}/visuals`, "POST", {
                 version: story.version,
               }),
-            "Photo discovery queued. The private video will rebuild automatically.",
+            "Source media search queued. The private video will rebuild automatically.",
           )
         }
       >
-        Find related photos & rebuild preview
+        Find photos & videos and rebuild preview
       </button>
       <details>
         <summary className="asset-summary">
@@ -2289,65 +2666,152 @@ function AssetPanel({
             <span>Archive image — label accordingly</span>
           </label>
           <button className="button" disabled={disabled || !image}>
-            Store verified asset
+            Store asset for review
           </button>
         </form>
       </details>
-      {story.assets.map((a) => (
-        <div className="asset-row" key={a.id}>
-          <img src={media(a.file)} alt={a.context} />
-          <div>
-            <strong>{a.creator}</strong>
-            <small>
-              {a.permission} · {a.archive ? "Archive" : "Event image"}
-            </small>
-            {a.discovery && (
-              <>
-                <small>
-                  {a.eventDate} · {a.location}
-                </small>
-                <p>
-                  <a
-                    href={a.discovery.sourceUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Original file & attribution
-                  </a>{" "}
-                  ·{" "}
-                  <a
-                    href={a.discovery.licenseUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    License
-                  </a>
-                </p>
-                <small>{a.discovery.changes}</small>
-                {!a.discovery.reviewed && (
-                  <button
-                    className="button"
-                    disabled={disabled}
-                    onClick={() =>
-                      void act(
-                        () =>
-                          api(
-                            `/stories/${story.id}/assets/${a.id}/review`,
-                            "PATCH",
-                            { version: story.version, reviewed: true },
-                          ),
-                        "Image identity, context and reuse review recorded in a new revision.",
-                      )
-                    }
-                  >
-                    Confirm image identity, context & reuse rights
-                  </button>
-                )}
-              </>
+      {[...story.assets]
+        .sort((a, b) => {
+          const rank = (assetId: string) => {
+            const index = story.segments.findIndex(
+              (s) => s.assetId === assetId,
+            );
+            return index < 0 ? 999 : index;
+          };
+          return rank(a.id) - rank(b.id);
+        })
+        .map((a) => (
+          <div className="asset-row" key={a.id}>
+            {a.mediaType === "video" ? (
+              <video
+                src={media(a.file)}
+                poster={a.poster ? media(a.poster) : undefined}
+                controls
+                muted
+                playsInline
+                preload="metadata"
+                aria-label={a.sourceMedia?.title || a.context}
+              />
+            ) : (
+              <img src={media(a.file)} alt={a.context} loading="lazy" />
             )}
+            <div>
+              <strong>
+                {a.subject ||
+                  a.sourceMedia?.title?.slice(0, 160) ||
+                  a.discovery?.title?.replace(/^File:/, "") ||
+                  a.creator}
+              </strong>
+              {(story.segments.some((s) => s.assetId === a.id) ||
+                story.renders
+                  .find((r) => r.version === story.version)
+                  ?.shots?.some((s) => s.assetId === a.id)) && (
+                <small>Selected in preview</small>
+              )}
+              <small>Credit: {a.creator}</small>
+              <small>
+                {a.graphic
+                  ? "Original explainer"
+                  : a.mediaType === "video"
+                    ? "Video excerpt"
+                    : "Photo"}{" "}
+                ·{" "}
+                {a.sourceMedia?.publisher ||
+                  (a.archive ? "Archive" : "Event image")}
+              </small>
+              {a.sourceMedia && (
+                <>
+                  <small>
+                    {a.graphic
+                      ? `Reporting snapshot: ${a.eventDate}`
+                      : a.sourceMedia.captureDate
+                        ? `Dated ${a.sourceMedia.captureDate.slice(0, 10)}`
+                        : `Published ${a.sourceMedia.publishedAt?.slice(0, 10) || "date unconfirmed"} · Capture date unconfirmed`}
+                  </small>
+                  <p>
+                    <a href={a.provenance} target="_blank" rel="noreferrer">
+                      {a.graphic
+                        ? "Original artwork & credits"
+                        : "Source report & credits"}
+                    </a>
+                  </p>
+                  <small>{a.sourceMedia.changes}</small>
+                  <small>{a.permission}</small>
+                  {!a.sourceMedia.reviewed && (
+                    <button
+                      className="button"
+                      disabled={disabled}
+                      onClick={() =>
+                        void act(
+                          () =>
+                            api(
+                              `/stories/${story.id}/assets/${a.id}/review`,
+                              "PATCH",
+                              { version: story.version, reviewed: true },
+                            ),
+                          "Media identity and context recorded. Document reuse permission separately before final production.",
+                        )
+                      }
+                    >
+                      Confirm media identity & context
+                    </button>
+                  )}
+                </>
+              )}
+              {a.discovery && (
+                <>
+                  <small>
+                    {a.eventDate} · {a.location}
+                  </small>
+                  <p>
+                    <a
+                      href={a.discovery.sourceUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Original file & attribution
+                    </a>{" "}
+                    ·{" "}
+                    <a
+                      href={a.discovery.licenseUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      License
+                    </a>
+                  </p>
+                  <small>{a.discovery.changes}</small>
+                  {!a.discovery.reviewed && (
+                    <button
+                      className="button"
+                      disabled={disabled}
+                      onClick={() =>
+                        void act(
+                          () =>
+                            api(
+                              `/stories/${story.id}/assets/${a.id}/review`,
+                              "PATCH",
+                              { version: story.version, reviewed: true },
+                            ),
+                          "Image identity and context recorded. Document reuse permission separately before final production.",
+                        )
+                      }
+                    >
+                      Confirm image identity & context
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+            <MediaRightsEditor
+              key={`${story.version}-${a.id}`}
+              asset={a}
+              story={story}
+              disabled={disabled}
+              act={act}
+            />
           </div>
-        </div>
-      ))}
+        ))}
     </section>
   );
 }

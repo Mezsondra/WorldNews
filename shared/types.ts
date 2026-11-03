@@ -1,6 +1,7 @@
 export type ClaimStatus =
   | "supported fact"
   | "attributed statement"
+  | "attributed reporting"
   | "allegation"
   | "analysis"
   | "disputed"
@@ -15,6 +16,12 @@ export type Stage =
   | "held"
   | "rejected";
 export interface Source {
+  origin?: {
+    kind: "original" | "derived" | "unknown";
+    key: string;
+    parentSourceIds: string[];
+    explanation: string;
+  };
   id: string;
   url: string;
   title: string;
@@ -44,14 +51,29 @@ export interface Claim {
   evidence: Evidence[];
 }
 export interface Segment {
+  beat?:
+    | "development"
+    | "mechanism"
+    | "context"
+    | "significance"
+    | "response"
+    | "uncertainty";
   id: string;
   text: string;
   claimIds: string[];
   assetId?: string;
+  visualSelection?: "manual" | "automatic";
 }
 export interface Asset {
+  graphic?: boolean;
+  graphicNarration?: string[];
+  contentHash?: string;
+  rights?: import("./media-rights.js").MediaRights;
   id: string;
   file: string;
+  mediaType?: "image" | "video";
+  poster?: string;
+  subject?: string;
   creator: string;
   permission: string;
   provenance: string;
@@ -59,6 +81,21 @@ export interface Asset {
   location: string;
   archive: boolean;
   context: string;
+  sourceMedia?: {
+    sourceId: string;
+    title: string;
+    publisher: string;
+    credit: string;
+    downloadUrl: string;
+    retrievedAt: string;
+    hash: string;
+    publishedAt: string;
+    captureDate?: string;
+    duration?: number;
+    people?: boolean;
+    reviewed: boolean;
+    changes: string;
+  };
   discovery?: {
     provider: "wikimedia";
     pageId: number;
@@ -73,6 +110,16 @@ export interface Asset {
   };
 }
 export interface Render {
+  quality?: import("./quality.js").QualityReport;
+  productionProfile?: import("./visuals.js").ProductionProfile;
+  visualPlan?: import("./visuals.js").EvidenceVisual[];
+  visualCoverage?: import("./visuals.js").VisualCoverage;
+  production?: import("./production.js").ProductionRecord;
+  shots?: RenderedShot[];
+  narrationReused?: number;
+  shotsReused?: number;
+  renderer?: "classic" | "moneyprinterturbo";
+  rendererVersion?: string;
   version: number;
   card: string;
   story: string;
@@ -87,11 +134,40 @@ export interface Render {
   privatePreview?: boolean;
   warnings?: string[];
 }
+export interface ShotOverride {
+  id: string;
+  segmentId: string;
+  kind:
+    | "media"
+    | "fact"
+    | "sources"
+    | "map"
+    | "document"
+    | "timeline"
+    | "chart"
+    | "process"
+    | "quote";
+  visualId?: string;
+  assetId?: string;
+  framing: "contain" | "portrait" | "detail";
+  videoStart?: number;
+}
+export interface RenderedShot extends ShotOverride {
+  visual?: import("./visuals.js").EvidenceVisual;
+  narration?: string;
+  purpose?: string;
+  start: number;
+  end: number;
+  label: string;
+  credit: string;
+  reused?: boolean;
+  poster?: string;
+}
 export interface AIReport {
   id: string;
   storyId: string;
   version: number;
-  kind: "research" | "draft" | "verification" | "visuals";
+  kind: "research" | "draft" | "verification" | "visuals" | "construction";
   createdAt: string;
   data: Record<string, unknown>;
 }
@@ -112,6 +188,7 @@ export interface CostEvent {
   actualUsd?: number;
 }
 export interface PilotStatus {
+  geminiVoice?: string;
   enabled: boolean;
   limitUsd: number;
   reservedUsd: number;
@@ -128,6 +205,28 @@ export interface Approval {
   at: string;
 }
 export interface Story {
+  editorial?: {
+    headline: { text: string; claimIds: string[] };
+    summary: { text: string; claimIds: string[] };
+    publishing: { text: string; claimIds: string[] };
+    onScreen: { id: string; text: string; claimIds: string[] }[];
+    check?: {
+      standard: string;
+      fingerprint: string;
+      reportId: string;
+      checkedAt: string;
+      assertions: {
+        id: string;
+        verdict: "supported" | "unsupported" | "contradicted" | "uncertain";
+        reason: string;
+        sourceIds: string[];
+      }[];
+    };
+  };
+  shotOverrides?: ShotOverride[];
+  captionProvider?: "estimated" | "assemblyai";
+  narrationProvider?: "local" | "gemini";
+  videoRenderer?: "classic" | "moneyprinterturbo";
   id: string;
   revision?: number;
   title: string;
@@ -151,6 +250,9 @@ export interface Story {
   pronunciations: Record<string, string>;
   format?: "brief" | "explainer";
   automation?: {
+    method?: "extractive" | "evidence-backed";
+    previewCaptions?: { version: number; provider: "estimated" | "assemblyai" };
+    previewNarration?: { version: number; provider: "local" | "gemini" };
     enabled: boolean;
     state: "waiting-research" | "queued" | "rendering" | "ready" | "blocked";
     message: string;
@@ -158,6 +260,8 @@ export interface Story {
   };
 }
 export interface Job {
+  captions?: "estimated" | "assemblyai";
+  tts?: "local" | "gemini";
   id: string;
   storyId: string;
   version: number;
@@ -167,7 +271,7 @@ export interface Job {
   lease: number;
   error?: string;
   createdAt: string;
-  kind?: "prepare" | "render" | "media";
+  kind?: "prepare" | "render" | "media" | "construct";
   privatePreview?: boolean;
 }
 export interface ResearchRun {
@@ -201,6 +305,7 @@ export interface Gate {
   message: string;
 }
 export interface Overview {
+  renderers?: { moneyprinterturbo: { available: boolean; detail: string } };
   stories: Story[];
   jobs: Job[];
   settings: Settings;
