@@ -2,12 +2,12 @@
   "name": "worldnews",
   "version": "1.0.0",
   "description": "A manual-first, source-linked world news production desk",
-  "main": "index.js",
   "directories": {
     "doc": "docs",
     "test": "tests"
   },
   "scripts": {
+    "evaluate": "tsx scripts/evaluate-stories.ts",
     "test": "tsx --test tests/*.test.ts",
     "dev": "tsx watch --env-file-if-exists=.env server/index.ts",
     "ui": "vite",
@@ -16,7 +16,8 @@
     "worker": "tsx --env-file-if-exists=.env server/worker-entry.ts",
     "demo": "tsx --env-file-if-exists=.env server/demo.ts",
     "format": "prettier --write src server shared tests",
-    "pilot": "tsx --env-file-if-exists=.env server/pilot.ts"
+    "pilot": "tsx --env-file-if-exists=.env server/pilot.ts",
+    "media:setup": "node scripts/setup-moneyprinterturbo.mjs"
   },
   "keywords": [],
   "author": "",

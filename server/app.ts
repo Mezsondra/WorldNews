@@ -1,6 +1,6 @@
 import express from "express";
-import { timingSafeEqual } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { timingSafeEqual, createHash } from "node:crypto";
+import { mkdir, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { z } from "zod";
@@ -8,15 +8,23 @@ import { Store, dataDir } from "./db.js";
 import {
   gates,
   productionGates,
+  previewGates,
   id,
   invalidate,
   newStory,
   now,
 } from "./domain.js";
-import { retrieve } from "./fetcher.js";
+import { retrieve, validateUrl } from "./fetcher.js";
+import { discovery } from "./discovery.js";
 import { queueResearch } from "./research.js";
 import { queueAutomaticVideo } from "./automation.js";
+import { queueStoryConstruction } from "./story-construction.js";
+import { sourceOriginSchema, originGraphIssues } from "./source-origins.js";
 import { sourcePage } from "./source-page.js";
+import { moneyPrinterStatus, ensureMoneyPrinter, safeFile } from "./moneyprinterturbo.js";
+import { mediaRightsSchema, recordMediaRights } from "./media-rights.js";
+import { narrationCharacters } from "./media.js";
+import { validateShotOverrides } from "./editorial-plan.js";
 import type { Story, Job } from "../shared/types.js";
 import {
   claudeAssist,
@@ -40,6 +48,7 @@ const claim = z.object({
   status: z.enum([
     "supported fact",
     "attributed statement",
+    "attributed reporting",
     "allegation",
     "analysis",
     "disputed",
@@ -52,6 +61,7 @@ const segment = z.object({
   text: z.string().trim().min(1).max(900),
   claimIds: z.array(identifier).min(1).max(10),
   assetId: identifier.optional(),
+  visualSelection: z.enum(["manual", "automatic"]).optional(),
 });
 const edit = z.object({
   version: z.number().int().positive(),
@@ -227,6 +237,7 @@ export function createApp(store: Store) {
       voice: voiceLabel(),
       pilot: await pilotStatus(store),
       researchRuns: await store.researchRuns(),
+      renderers: { moneyprinterturbo: await moneyPrinterStatus() },
       publishing: "Export only · accounts not connected",
       gates: Object.fromEntries(stories.map((s) => [s.id, gates(s)])),
     });
@@ -238,11 +249,13 @@ export function createApp(store: Store) {
         url: z.string().url().optional(),
         research: z.boolean().optional().default(true),
         autoProduce: z.boolean().optional().default(true),
+        buildFullStory: z.boolean().optional().default(false),
       })
       .parse(req.body);
     const story = newStory(input.title);
-    if (input.autoProduce)
+    if (input.autoProduce || input.buildFullStory)
       story.automation = {
+        method: input.buildFullStory ? "evidence-backed" : "extractive",
         enabled: true,
         state: "waiting-research",
         message: "Research will continue into an automatic private video",
@@ -278,6 +291,25 @@ export function createApp(store: Store) {
     version(story, input.version);
     res.status(202).json(await queueAutomaticVideo(store, story));
   });
+  app.post("/api/stories/:id/construct", async (req, res) => {
+    const input = z
+      .object({ version: z.number().int().positive() })
+      .parse(req.body);
+    const story = await get(req.params.id);
+    version(story, input.version);
+    res.status(202).json(await queueStoryConstruction(store, story));
+  });
+  app.get("/api/stories/:id/construction/:jobId/sources", async (req, res) => {
+    await get(req.params.id);
+    const job = (await store.jobs()).find(
+      (j) =>
+        j.id === req.params.jobId &&
+        j.storyId === req.params.id &&
+        j.kind === "construct",
+    );
+    if (!job) fail("Construction job not found.", 404);
+    res.json(await store.researchSources(job!.id));
+  });
   app.post("/api/stories/:id/visuals", async (req, res) => {
     const input = z
       .object({ version: z.number().int().positive() })
@@ -299,7 +331,7 @@ export function createApp(store: Store) {
       kind: "media",
       privatePreview: true,
       status: "queued",
-      progress: "Finding credited archive/context photos",
+      progress: "Finding source photos, people and video clips",
       attempts: 0,
       lease: 0,
       createdAt: now(),
@@ -316,21 +348,55 @@ export function createApp(store: Store) {
       .parse(req.body);
     const story = await get(req.params.id);
     version(story, input.version);
-    if (!story.assets.some((a) => a.id === req.params.assetId && a.discovery))
-      fail("Discovered image not found.", 404);
+    if (
+      !story.assets.some(
+        (a) => a.id === req.params.assetId && (a.discovery || a.sourceMedia),
+      )
+    )
+      fail("Discovered media not found.", 404);
     res.json(
       await replace(
         story,
         invalidate({
           ...story,
           assets: story.assets.map((a) =>
-            a.id === req.params.assetId && a.discovery
-              ? { ...a, discovery: { ...a.discovery, reviewed: true } }
+            a.id === req.params.assetId && (a.discovery || a.sourceMedia)
+              ? {
+                  ...a,
+                  ...(a.discovery
+                    ? { discovery: { ...a.discovery, reviewed: true } }
+                    : {}),
+                  ...(a.sourceMedia
+                    ? {
+                        sourceMedia: { ...a.sourceMedia, reviewed: true },
+                      }
+                    : {}),
+                }
               : a,
           ),
         }),
       ),
     );
+  });
+  app.patch("/api/stories/:id/assets/:assetId/rights", async (req, res) => {
+    const input = z.object({ version: z.number().int().positive(), decision: mediaRightsSchema }).parse(req.body);
+    const story = await get(req.params.id);
+    version(story, input.version);
+    const asset = story.assets.find(a => a.id === req.params.assetId);
+    if (!asset) fail("Media asset not found.", 404);
+    const bytes = await readFile(await safeFile(asset!.file));
+    const checkedAsset = { ...asset!, contentHash: createHash("sha256").update(bytes).digest("hex") };
+    let rights;
+    try { rights = recordMediaRights(checkedAsset, input.decision); }
+    catch (error) { return res.status(422).json({ error: error instanceof Error ? error.message : "Invalid rights decision." }); }
+    const next = invalidate({ ...story, assets: story.assets.map(a => a.id === checkedAsset.id ? {
+      ...checkedAsset, rights,
+      ...(rights.contextChecked && a.sourceMedia ? { sourceMedia: { ...a.sourceMedia, reviewed: true } } : {}),
+      ...(rights.contextChecked && a.discovery ? { discovery: { ...a.discovery, reviewed: true } } : {}),
+    } : a) });
+    const saved = await replace(story, next);
+    await store.audit("media-rights-recorded", { storyId: story.id, assetId: checkedAsset.id, version: saved.version, status: rights.status, basis: rights.basis, reviewedBy: rights.reviewedBy });
+    res.json(saved);
   });
   app.post("/api/stories/:id/research", async (req, res) => {
     const input = z
@@ -392,12 +458,84 @@ export function createApp(store: Store) {
           summary: draft.summary,
           claims: draft.claims.map((c) => ({ ...c, reviewed: false })),
           segments: draft.segments,
+          format: draft.format,
+          shotOverrides: undefined,
         });
         res.json({ story: await replace(current, next), report: result });
         return;
       }
     }
     res.json({ story: current, report: result });
+  });
+  app.post("/api/stories/:id/ai-reports/:reportId/apply", async (req, res) => {
+    const input = z
+      .object({ version: z.number().int().positive() })
+      .parse(req.body);
+    const current = await get(req.params.id);
+    version(current, input.version);
+    if (["held", "rejected", "producing", "approved"].includes(current.stage))
+      fail("Resume an editable story before applying a saved draft.", 422);
+    if (
+      (await store.jobs()).some(
+        (j) =>
+          j.storyId === current.id && ["queued", "running"].includes(j.status),
+      ) ||
+      (await store.researchRuns()).some(
+        (r) =>
+          r.storyId === current.id && ["queued", "running"].includes(r.status),
+      )
+    )
+      fail("Wait for the active research or production job to finish.", 409);
+    const report = (await store.reports(current.id)).find(
+      (r) => r.id === req.params.reportId && r.kind === "draft",
+    );
+    if (!report) fail("Saved draft not found.", 404);
+    if (report!.version !== current.version)
+      fail(
+        "This draft belongs to an older revision. Review the current sources and script.",
+        409,
+      );
+    const draft = validateDraft(current, report!.data);
+    if (draft.outcome !== "draft")
+      fail("This report held the story; add evidence before drafting.", 422);
+    const next = invalidate({
+      ...current,
+      summary: draft.summary,
+      claims: draft.claims.map((c) => ({ ...c, reviewed: false })),
+      segments: draft.segments,
+      format: draft.format,
+      shotOverrides: undefined,
+      automation:
+        current.automation?.state === "blocked"
+          ? {
+              ...current.automation,
+              message:
+                "Saved draft applied. Review its evidence before continuing automatic production.",
+            }
+          : current.automation,
+    });
+    await replace(current, next);
+    const applied = {
+      id: id(),
+      storyId: next.id,
+      version: next.version,
+      kind: "draft" as const,
+      createdAt: now(),
+      data: {
+        ...draft,
+        appliedFrom: report!.id,
+        recovery:
+          "Saved draft revalidated against current sources and applied without a provider request.",
+      },
+    };
+    await store.addReport(applied);
+    await store.audit("saved-draft-applied", {
+      storyId: next.id,
+      reportId: report!.id,
+      version: next.version,
+      format: next.format,
+    });
+    res.json({ story: next, report: applied });
   });
   app.put("/api/stories/:id", async (req, res) => {
     const input = edit.parse(req.body),
@@ -413,6 +551,11 @@ export function createApp(store: Store) {
       ...input,
       claims: input.claims.map((c) => ({ ...c, reviewed: false })),
       pronunciations: input.pronunciations || old.pronunciations,
+      shotOverrides:
+        JSON.stringify(old.segments.map((s) => [s.id, s.text])) ===
+        JSON.stringify(input.segments.map((s) => [s.id, s.text]))
+          ? old.shotOverrides
+          : undefined,
     });
     res.json(await replace(old, next));
   });
@@ -445,6 +588,7 @@ export function createApp(store: Store) {
         lineage: short.min(1),
         kind: z.enum(["primary", "secondary"]),
         language: z.string().min(2).max(10),
+        origin: sourceOriginSchema.optional(),
       })
       .parse(req.body);
     const old = await get(req.params.id);
@@ -452,6 +596,11 @@ export function createApp(store: Store) {
     const source = old.sources.find((s) => s.id === req.params.sourceId);
     if (!source) fail("Source not found.", 404);
     const { version: _v, ...fields } = input;
+    const proposedSources = old.sources.map((s) =>
+      s.id === source!.id ? { ...s, ...fields } : s,
+    );
+    const graphIssues = originGraphIssues(proposedSources);
+    if (graphIssues.length) fail(graphIssues[0], 422);
     res.json(
       await replace(
         old,
@@ -523,6 +672,141 @@ export function createApp(store: Store) {
       reviewed: input.reviewed,
     });
     res.json(story);
+  });
+  app.post("/api/stories/:id/renderer", async (req, res) => {
+    const input = z
+      .object({
+        version: z.number().int().positive(),
+        renderer: z.enum(["classic", "moneyprinterturbo"]),
+        tts: z.enum(["local", "gemini"]).default("local"),
+        captions: z.enum(["estimated", "assemblyai"]).default("estimated"),
+        shotOverrides: z
+          .array(
+            z.object({
+              id: z.string().regex(/^shot-\d{2}$/),
+              segmentId: identifier,
+              kind: z.enum(["media", "fact", "sources", "map", "document", "timeline", "chart", "process", "quote"]),
+              visualId: z.string().regex(/^visual-[a-f0-9]{16}$/).optional(),
+              assetId: identifier.optional(),
+              framing: z.enum(["contain", "portrait", "detail"]),
+              videoStart: z.number().finite().min(0).max(90).optional(),
+            }),
+          )
+          .max(30)
+          .optional(),
+      })
+      .parse(req.body);
+    const old = await get(req.params.id);
+    version(old, input.version);
+    if (["held", "rejected", "approved", "producing"].includes(old.stage))
+      fail(
+        "Resume an editable story before building a comparison preview.",
+        422,
+      );
+    if (
+      (await store.jobs()).some(
+        (j) => j.storyId === old.id && ["queued", "running"].includes(j.status),
+      )
+    )
+      fail("Wait for the current production job to finish.", 409);
+    if (input.renderer === "moneyprinterturbo") await ensureMoneyPrinter();
+    if (input.captions === "assemblyai") {
+      const pilot = await pilotStatus(store);
+      if (!pilot.enabled || !pilot.providers.assemblyai)
+        fail(
+          "Enable the API pilot and configure AssemblyAI before aligning captions.",
+          422,
+        );
+      if (pilot.remainingUsd < (input.tts === "gemini" ? 1.1 : 0.1))
+        fail(
+          "There is insufficient pilot allowance for narration and aligned captions.",
+          422,
+        );
+    }
+    if (input.tts === "gemini") {
+      const pilot = await pilotStatus(store);
+      if (!pilot.enabled || !pilot.providers.gemini)
+        fail(
+          "Enable the API pilot and configure GEMINI_API_KEY before selecting Gemini narration.",
+          422,
+        );
+      if (pilot.remainingUsd < 1)
+        fail("Gemini narration needs $1 of available pilot allowance.", 422);
+      if (
+        old.segments.length > 8 ||
+        narrationCharacters(old) >
+          Number(process.env.MAX_PAID_CHARACTERS_PER_RENDER || 1500)
+      )
+        fail(
+          "Gemini narration allows at most eight scenes within the configured character ceiling.",
+          422,
+        );
+    }
+    const next = invalidate({
+      ...old,
+      videoRenderer: input.renderer,
+      narrationProvider: input.tts,
+      captionProvider: input.captions,
+      shotOverrides: input.shotOverrides ?? old.shotOverrides,
+    });
+    try {
+      validateShotOverrides(next, next.shotOverrides || []);
+    } catch (error) {
+      fail(
+        error instanceof Error ? error.message : "Invalid visual plan.",
+        422,
+      );
+    }
+    const issues = previewGates(next);
+    if (issues.length)
+      return res.status(422).json({
+        error: "The script or media needs attention before previewing.",
+        gates: issues,
+      });
+    next.automation = {
+      previewNarration: { version: next.version, provider: input.tts },
+      previewCaptions: { version: next.version, provider: input.captions },
+      enabled: true,
+      state: "rendering",
+      message: "Building renderer comparison preview",
+      warnings: old.automation?.warnings || [],
+    };
+    await replace(old, next);
+    const job: Job = {
+      id: id(),
+      storyId: next.id,
+      version: next.version,
+      kind: "render",
+      privatePreview: true,
+      tts: input.tts,
+      captions: input.captions,
+      status: "queued",
+      progress: `Waiting for ${input.renderer === "moneyprinterturbo" ? "MoneyPrinterTurbo" : "Classic"} render`,
+      attempts: 0,
+      lease: 0,
+      createdAt: now(),
+    };
+    try {
+      await store.addJob(job);
+    } catch (error) {
+      // The durable scheduler may have queued this saved revision first.
+      const concurrent = (await store.jobs()).find(
+        (j) =>
+          j.storyId === next.id &&
+          j.version === next.version &&
+          ["queued", "running"].includes(j.status),
+      );
+      if (!concurrent) throw error;
+      return res.status(202).json(concurrent);
+    }
+    await store.audit("renderer-preview-queued", {
+      storyId: next.id,
+      version: next.version,
+      renderer: input.renderer,
+      tts: input.tts,
+      captions: input.captions,
+    });
+    res.status(202).json(job);
   });
   app.post("/api/stories/:id/render", async (req, res) => {
     const input = z.object({ version: z.number().int() }).parse(req.body);
@@ -658,11 +942,12 @@ export function createApp(store: Store) {
       file = `assets/${old.id}/${assetId}.png`;
     await mkdir(path.dirname(path.join(dataDir, file)), { recursive: true });
     const bytes = Buffer.from(input.image.split(",")[1], "base64");
-    await sharp(bytes, { limitInputPixels: 40_000_000 })
+    const imageBytes = await sharp(bytes, { limitInputPixels: 40_000_000 })
       .rotate()
       .resize(1920, 1920, { fit: "inside", withoutEnlargement: true })
       .png()
-      .toFile(path.join(dataDir, file));
+      .toBuffer();
+    await writeFile(path.join(dataDir, file), imageBytes);
     const { image: _image, version: _v, ...metadata } = input;
     const current = await get(old.id);
     version(current, input.version);
@@ -671,7 +956,7 @@ export function createApp(store: Store) {
         current,
         invalidate({
           ...current,
-          assets: [...current.assets, { id: assetId, file, ...metadata }],
+          assets: [...current.assets, { id: assetId, file, contentHash: createHash("sha256").update(imageBytes).digest("hex"), ...metadata }],
         }),
       ),
     );
@@ -682,6 +967,32 @@ export function createApp(store: Store) {
   app.get("/api/stories/:id/history", async (req, res) =>
     res.json(await store.history(String(req.params.id))),
   );
+  app.get("/api/discovery", async (_req, res) =>
+    res.json(await discovery(store)),
+  );
+  app.post("/api/feeds", async (req, res) => {
+    const input = z
+      .object({ url: z.string().url().max(2048), name: short.min(1).max(80) })
+      .parse(req.body);
+    const feed = { ...input, url: validateUrl(input.url).href, addedAt: now() };
+    await store.addFeed(feed);
+    await store.audit("feed-added", feed);
+    res.status(201).json(feed);
+  });
+  app.delete("/api/feeds", async (req, res) => {
+    const input = z.object({ url: z.string().max(2048) }).parse(req.body);
+    await store.removeFeed(input.url);
+    await store.audit("feed-removed", input);
+    res.json(input);
+  });
+  app.post("/api/discovery/dismiss", async (req, res) => {
+    const input = z
+      .object({ itemIds: z.array(identifier).min(1).max(200) })
+      .parse(req.body);
+    await store.dismissFeedItems(input.itemIds);
+    await store.audit("leads-dismissed", input);
+    res.json(input);
+  });
   app.post("/api/settings", async (req, res) => {
     const input = z.object({ paused: z.boolean() }).parse(req.body);
     await store.setSettings(input);

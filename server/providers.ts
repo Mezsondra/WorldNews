@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { equivalentSpeech } from "./speech-equivalence.js";
 import type {
   Story,
   CostEvent,
@@ -7,20 +8,30 @@ import type {
   PilotStatus,
 } from "../shared/types.js";
 import { Store } from "./db.js";
-import { id, now } from "./domain.js";
+import { id, now, NARRATION_LIMITS, narrationFormat, gates } from "./domain.js";
 
 export type Fetcher = typeof fetch;
-export const CLAUDE_MODEL = "claude-sonnet-4-6";
-export const GEMINI_MODEL = "gemini-3.8-flash-tts";
-export const GEMINI_VERIFICATION_MODEL = "gemini-3.8-flash";
+export {
+  CLAUDE_MODEL,
+  GEMINI_MODEL,
+  GEMINI_VERIFICATION_MODEL,
+} from "./pricing.js";
+import {
+  CLAUDE_MODEL,
+  GEMINI_MODEL,
+  GEMINI_VERIFICATION_MODEL,
+} from "./pricing.js";
 export const voiceLabel = (provider = process.env.TTS_PROVIDER) =>
   provider === "gemini"
     ? "Gemini · synthetic voice"
     : provider === "elevenlabs"
       ? "ElevenLabs · synthetic voice"
       : "Local development voice";
+export const GEMINI_NARRATION_STYLE =
+  "Neutral English news narration, clear names and numbers, measured pace around 140 words per minute with deliberate sentence pauses. Read the text verbatim.";
 export async function pilotStatus(store: Store): Promise<PilotStatus> {
   return {
+    geminiVoice: process.env.GEMINI_VOICE || "Kore",
     enabled: process.env.PILOT_API_ENABLED === "true",
     ...(await store.budget()),
     events: await store.costs(),
@@ -107,7 +118,7 @@ const researchSchema = z.object({
   perspectives: z.array(clean.max(500)).max(12),
   cautions: z.array(clean.max(500)).max(12),
 });
-const draftSchema = z.object({
+export const draftSchema = z.object({
   outcome: z.enum(["draft", "hold"]),
   reason: clean.max(1500),
   summary: clean.max(220),
@@ -119,6 +130,7 @@ const draftSchema = z.object({
         status: z.enum([
           "supported fact",
           "attributed statement",
+          "attributed reporting",
           "disputed",
           "insufficient evidence",
         ]),
@@ -148,7 +160,8 @@ const draftSchema = z.object({
 });
 export function validateDraft(story: Story, value: unknown) {
   const output = draftSchema.parse(value);
-  if (output.outcome === "hold") return output;
+  if (output.outcome === "hold")
+    return { ...output, format: story.format || ("brief" as const) };
   if (!output.claims.length || !output.segments.length)
     throw new Error("Claude returned an empty draft.");
   if (
@@ -160,9 +173,9 @@ export function validateDraft(story: Story, value: unknown) {
     .map((s) => s.text)
     .join(" ")
     .split(/\s+/).length;
-  if (words < 140 || words > 205)
+  if (words < NARRATION_LIMITS.min || words > NARRATION_LIMITS.max)
     throw new Error(
-      `Claude draft has ${words} words; 140–205 are required. It was not applied.`,
+      `Claude draft has ${words} words; ${NARRATION_LIMITS.min}–${NARRATION_LIMITS.max} are required for at least one minute of narration, excluding closing sources. It was not applied.`,
     );
   for (const c of output.claims)
     for (const e of c.evidence) {
@@ -187,7 +200,28 @@ export function validateDraft(story: Story, value: unknown) {
   for (const s of output.segments)
     if (s.claimIds.some((cid) => !output.claims.some((c) => c.id === cid)))
       throw new Error("Claude returned a missing claim reference.");
-  return output;
+  const format = narrationFormat(words);
+  const evidenceIssue = gates({
+    ...story,
+    format,
+    segments: output.segments,
+    claims: output.claims.map((c) => ({ ...c, reviewed: false })),
+  }).find((g) =>
+    [
+      "original",
+      "lineage",
+      "attribution",
+      "evidence",
+      "contradiction",
+      "translation",
+      "unsupported",
+    ].includes(g.code),
+  );
+  if (evidenceIssue)
+    throw new Error(
+      `Claude draft: ${evidenceIssue.message} It was not applied.`,
+    );
+  return { ...output, format };
 }
 function sourceInput(story: Story) {
   if (!story.sources.length)
@@ -227,7 +261,7 @@ export async function claudeAssist(
   const instructions =
     kind === "research"
       ? "Analyze ONLY attached source snapshots. Identify evidence gaps, relevant perspectives to seek, contradictions, and source-lineage limitations. You have not searched the web or contacted anyone. Never imply that you did."
-      : "Create a concise English narrated news draft with 4–6 short scenes. Target 150–170 TOTAL narration words; count all segment text together. Keep narration under 185 words to leave a safety margin. Retain conservative attribution and uncertainty. Each factual sentence must link to a claim, each claim to exact verbatim source passages (max 500 chars each) using only supplied source IDs. Preserve original language passages and add reviewed-translation candidates when needed. Use attributed statement for a single primary lineage. A primary statement establishes what was said; it does not independently verify its allegations. Do not introduce facts, quotations, names, numbers, dates, context, or conclusions absent from the attached sources. Do not repeat or pad facts to reach length; return outcome hold with a reason and empty claims/segments if the sources cannot support a substantive short video. Do not add editorial conclusions. All drafts remain unreviewed.";
+      : "Create a concise English narrated news draft with 4–6 short narration segments. Open with the clearest supported development, explain its supported consequence, then state any documented uncertainty. Write for listening: short sentences, natural transitions, spell out unfamiliar acronyms on first use, and avoid repeated lists of reporting outlets. Keep necessary attribution for allegations and disputed statements in the spoken script; routine publisher credits appear on screen. Narration segments are independent of visual shots, which change every 3–6 seconds. Target 160–185 TOTAL narration words; valid drafts contain 140–205 words, counted across all segments. The story must provide at least 60 seconds of substantive narration, excluding closing sources. Include only useful supported context, mechanism, significance, responses and documented uncertainty. If the attached sources cannot support a substantive minute-long story, return outcome hold and identify the missing evidence. Never repeat, pad, or slow narration to reach the minimum. Retain conservative attribution and uncertainty. Each factual sentence must link to a claim, each claim to exact verbatim source passages (max 500 chars each) using only supplied source IDs. Preserve original language passages and add reviewed-translation candidates when needed. Use supported fact only with two independent supporting lineages. Use attributed reporting for a news outlet’s account: BOTH the claim text and EVERY linked narration segment must explicitly say “According to [publisher], …” or “[publisher] reports …”. On-screen credits alone do not satisfy this attribution. Use attributed statement only for a single primary lineage. A primary statement establishes what was said; it does not independently verify its allegations. Do not introduce facts, quotations, names, numbers, dates, context, or conclusions absent from the attached sources. Do not repeat or pad facts to reach length; return outcome hold with a reason and empty claims/segments if the sources cannot support a substantive minute-long video. Ignore related-article headlines, navigation, recommendations, player notices and other page furniture; they are not evidence for the article. Do not add editorial conclusions. All drafts remain unreviewed.";
   const body = {
     model: CLAUDE_MODEL,
     max_tokens: 3000,
@@ -341,8 +375,7 @@ export async function geminiSpeech(
             annotations: [
               {
                 type: "speech_metadata",
-                style:
-                  "Neutral English news narration, clear names and numbers, measured pace around 140 words per minute with deliberate sentence pauses. Read the text verbatim.",
+                style: GEMINI_NARRATION_STYLE,
               },
             ],
           },
@@ -502,7 +535,7 @@ export function captionDifferences(script: string, words: TimedWord[]) {
     s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
   const expected = script.split(/\s+/).map(normalize).filter(Boolean),
     actual = words.map((w) => normalize(w.text)).filter(Boolean);
-  if (expected.join(" ") === actual.join(" ")) return [];
+  if (equivalentSpeech(script, words.map((w) => w.text).join(" "))) return [];
   return [
     `Recognized captions differ from the saved script (${expected.length} script words; ${actual.length} recognized words). Compare transcript, numbers, names, and audio before approval.`,
   ];

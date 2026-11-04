@@ -2,7 +2,12 @@ import { z } from "zod";
 import type { Claim, ResearchRun, Source, Story } from "../shared/types.js";
 import { Store } from "./db.js";
 import { id, invalidate, now } from "./domain.js";
-import { retrieve, validateUrl } from "./fetcher.js";
+import { retrieveAutomated, validateUrl } from "./fetcher.js";
+import {
+  sourceOriginSchema,
+  independentOrigins,
+  originGraphIssues,
+} from "./source-origins.js";
 import {
   CLAUDE_MODEL,
   GEMINI_VERIFICATION_MODEL,
@@ -29,6 +34,7 @@ const verificationSchema = z.object({
         kind: z.enum(["primary", "secondary"]),
         lineage: clean.min(1).max(200),
         assessment: clean.min(1).max(800),
+        origin: sourceOriginSchema.optional(),
       }),
     )
     .max(8),
@@ -79,7 +85,11 @@ const referenceSchema = verificationSchema.extend({
 });
 export function evidenceCatalog(sources: Source[]) {
   return sources.flatMap((source, i) => {
-    const text = source.text.slice(0, 7000),
+    // Saved snapshots remain intact. A clearly marked related-story list is
+    // not article evidence; do not supply those navigation headlines as context.
+    const text = source.text
+        .split(/\bRead more\s+Read less\b/i)[0]
+        .slice(0, 7000),
       passages: { id: string; sourceId: string; text: string }[] = [];
     let offset = 0;
     while (offset < text.length) {
@@ -333,6 +343,7 @@ export function validateVerification(
       ...source,
       kind: assessment.kind,
       lineage: assessment.lineage,
+      origin: assessment.origin || source.origin,
       research: {
         runId,
         assessment: assessment.assessment,
@@ -340,6 +351,12 @@ export function validateVerification(
       },
     };
   });
+  const assessedSources = sources.map((s) => {
+    const a = result.sources.find((a) => a.sourceId === s.id);
+    return a ? { ...s, lineage: a.lineage, origin: a.origin || s.origin } : s;
+  });
+  const graphIssues = originGraphIssues(assessedSources);
+  if (graphIssues.length) throw new Error(graphIssues.join(" "));
   const claims: Claim[] = result.claims.map((claim, i) => {
     for (const evidence of claim.evidence) {
       const source = sources.find((s) => s.id === evidence.sourceId);
@@ -370,7 +387,10 @@ export function validateVerification(
       (s) =>
         result.sources.find((a) => a.sourceId === s.id)?.lineage || s.lineage,
     );
-    const lineages = new Set(origins.map((s) => s.trim().toLowerCase()));
+    const lineages = independentOrigins(
+      assessedSources,
+      supporting.map((s) => s.id),
+    );
     const hosts = new Set(supporting.map((s) => host(s.url)));
     let status = claim.status;
     if (claim.evidence.some((e) => e.relation === "contradicts"))
@@ -378,7 +398,7 @@ export function validateVerification(
     else if (!supporting.length) status = "insufficient evidence";
     else if (
       status === "supported fact" &&
-      (lineages.size < 2 ||
+      (lineages.length < 2 ||
         hosts.size < 2 ||
         origins.some((s) => /unassessed|unknown|uncertain/i.test(s)))
     )
@@ -416,7 +436,7 @@ export async function runResearch(
   store: Store,
   run: ResearchRun,
   request: Fetcher = fetch,
-  fetchSource: (url: string) => Promise<Source> = retrieve,
+  fetchSource: (url: string) => Promise<Source> = retrieveAutomated,
 ) {
   let event: Awaited<ReturnType<typeof reserve>> | undefined;
   const progress = async (text: string) => {
@@ -640,7 +660,7 @@ export async function runResearch(
       max_tokens: 4500,
       system:
         untrusted +
-        "You are the evidence-checking pass after a separate discovery pass. Return at most SIX central claims, at most three passage references per claim, concise source assessments and short gap lists. Assess ONLY these retrieved source excerpts, not memory or search snippets. Each evidence item must select a supplied passageId and its sourceId. Do not write or reconstruct quotations: the backend copies the exact stored passage for that ID. Preserve original-language meaning; supply English translation candidates for selected non-English passages. Distinguish what someone said from whether their allegation is true. Classify original documents/statements as primary only for what they establish; reporting about them is secondary. Identify each source's true originating lineage: syndication, quoted wire reports and copied accounts share an origin. Different websites alone never establish independence. Use 'Unassessed research sources' if origin is unclear. Supported fact requires two independent original lineages; single primary statements must be attributed, single secondary claims are insufficient. Link contradicting passages, mark disputes and gaps explicitly. No evidence means an empty evidence array and insufficient evidence. Do not confuse an intentionally bounded excerpt with a truncated publisher article; excerptTruncated tells you which applies. No confidence scores or certification of truth. Return outcome hold if central claims lack evidence. Even evidence-found only means eligible for human review. Never imply anyone was contacted. Consider date mismatches and source relevance; old context does not corroborate a new event.",
+        "You are the evidence-checking pass after a separate discovery pass. Return at most SIX central claims, at most three passage references per claim, concise source assessments and short gap lists. Assess ONLY these retrieved source excerpts, not memory or search snippets. Each evidence item must select a supplied passageId and its sourceId. Do not write or reconstruct quotations: the backend copies the exact stored passage for that ID. Preserve original-language meaning; supply English translation candidates for selected non-English passages. Distinguish what someone said from whether their allegation is true. Classify original documents/statements as primary only for what they establish; reporting about them is secondary. Identify each source's true originating lineage: syndication, quoted wire reports and copied accounts share an origin. Different websites alone never establish independence. Provide origin relationships for each source: original/derived/unknown, a common key for shared reporting, parentSourceIds for quoted or copied attached sources, and a short explanation. Unknown origins must remain unknown. Use 'Unassessed research sources' if origin is unclear. Supported fact requires two independent original lineages; single primary statements must be attributed, single secondary claims are insufficient. Link contradicting passages, mark disputes and gaps explicitly. No evidence means an empty evidence array and insufficient evidence. Do not confuse an intentionally bounded excerpt with a truncated publisher article; excerptTruncated tells you which applies. No confidence scores or certification of truth. Return outcome hold if central claims lack evidence. Even evidence-found only means eligible for human review. Never imply anyone was contacted. Consider date mismatches and source relevance; old context does not corroborate a new event.",
       messages: [{ role: "user", content: JSON.stringify(input) }],
       tools: [
         {

@@ -8,6 +8,8 @@ import { dataDir } from "../server/db.js";
 import {
   commonsCandidate,
   visualFocus,
+  visualFocuses,
+  headlineSubjects,
   discoverVisuals,
   attachDiscoveredVisuals,
   plainMetadata,
@@ -204,4 +206,66 @@ test("discovered images require explicit media review for final production", () 
   assert(!previewGates(story).some((g) => g.code === "media-review"));
   story.assets[0].discovery!.reviewed = true;
   assert(!gates(story).some((g) => g.code === "media-review"));
+});
+
+test("headline subjects give one neutral place search each; people, events and details are rejected", () => {
+  assert.deepEqual(
+    headlineSubjects(
+      "FBI says North Korea behind $6 billion Binance crypto theft",
+    ),
+    ["FBI", "North Korea", "Binance"],
+  );
+  assert.deepEqual(
+    headlineSubjects("Flooding forces evacuations in Valencia region"),
+    ["Valencia"],
+  );
+  assert.deepEqual(
+    headlineSubjects("Binance Resumes Withdrawals After Record Hack"),
+    [],
+  );
+  assert.deepEqual(headlineSubjects("US midterms: what is at stake"), []);
+  const story = newStory(
+    "FBI says North Korea behind $6 billion Binance crypto theft",
+  );
+  const focuses = visualFocuses(story);
+  assert.equal(focuses.length, 3);
+  assert.ok(focuses.every((f) => f.place));
+  assert.equal(
+    visualFocuses(newStory("Poland Constitutional Crisis")).length,
+    1,
+  );
+  const korea = focuses[1];
+  const photo = (title: string, description: string) => {
+    const p = page();
+    p.title = title;
+    p.imageinfo[0].extmetadata.ImageDescription.value = description;
+    return p;
+  };
+  const ok = commonsCandidate(
+    photo(
+      "File:North Korea - Ryugyong hotel.jpg",
+      "Ryugyong Hotel skyline, Pyongyang, North Korea",
+    ),
+    korea,
+  );
+  assert.equal(ok.location, "North Korea");
+  assert.ok(ok.archive);
+  for (const [title, description, reason] of [
+    ["File:Seoul skyline.jpg", "Skyline of Seoul, South Korea", /subject/],
+    ["File:North Korean leader.jpg", "Leader of North Korea", /neutral/],
+    [
+      "File:Pyongyang parade.jpg",
+      "Military parade in front of a building, North Korea",
+      /neutral/,
+    ],
+    [
+      "File:Third floor of hotel facade.jpg",
+      "Hotel in Pyongyang, North Korea",
+      /detail/,
+    ],
+  ] as const)
+    assert.throws(
+      () => commonsCandidate(photo(title, description), korea),
+      reason,
+    );
 });

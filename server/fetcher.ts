@@ -40,9 +40,10 @@ export function validateUrl(value: string) {
     throw new Error("Private network sources are blocked.");
   return url;
 }
+type Kind = "page" | "image" | "video" | "feed";
 async function request(
   url: URL,
-  image = false,
+  kind: Kind = "page",
 ): Promise<{
   status: number;
   location?: string;
@@ -70,9 +71,12 @@ async function request(
         headers: {
           "User-Agent":
             "WorldNewsResearch/0.3 (https://github.com/Mezsondra/WorldNews; editorial source retrieval)",
-          Accept: image
-            ? "image/jpeg,image/png,image/webp"
-            : "text/html,text/plain",
+          Accept: {
+            page: "text/html,text/plain",
+            image: "image/jpeg,image/png,image/webp",
+            video: "video/mp4,video/webm",
+            feed: "application/rss+xml,application/atom+xml,application/xml,text/xml",
+          }[kind],
           "Accept-Encoding": "identity",
         },
         lookup: ((_host: unknown, _options: unknown, callback: Function) =>
@@ -97,16 +101,31 @@ async function request(
           return;
         }
         if (
-          !(
-            image
-              ? /^image\/(jpeg|png|webp)(;|$)/i
-              : /text\/(html|plain)|application\/xhtml\+xml/
-          ).test(res.headers["content-type"] || "")
+          !{
+            page: /text\/(html|plain)|application\/xhtml\+xml/,
+            image: /^image\/(jpeg|png|webp)(;|$)/i,
+            video: /^video\/(mp4|webm)(;|$)/i,
+            feed: /xml/i,
+          }[kind].test(res.headers["content-type"] || "")
         ) {
           res.resume();
           reject(
             new Error(
-              "Use an HTML or plain-text source; PDFs need manual extraction.",
+              kind === "feed"
+                ? "Feed URL did not return RSS/Atom XML."
+                : "Use an HTML or plain-text source; PDFs need manual extraction.",
+            ),
+          );
+          return;
+        }
+        const image = kind === "image" || kind === "video";
+        const limit =
+          kind === "video" ? 60_000_000 : image ? 8_000_000 : 2_000_000;
+        if (Number(res.headers["content-length"]) > limit) {
+          res.destroy();
+          reject(
+            new Error(
+              `Source ${kind} exceeds the ${limit / 1_000_000} MB retrieval limit.`,
             ),
           );
           return;
@@ -115,12 +134,17 @@ async function request(
         const chunks: Buffer[] = [];
         res.on("data", (chunk: Buffer) => {
           bytes += chunk.length;
-          if (bytes > (image ? 8_000_000 : 2_000_000)) {
+          if (
+            bytes >
+            (kind === "video" ? 60_000_000 : image ? 8_000_000 : 2_000_000)
+          ) {
             req.destroy(
               new Error(
-                image
-                  ? "Image exceeds the 8 MB retrieval limit."
-                  : "Source exceeds the 2 MB retrieval limit.",
+                kind === "video"
+                  ? "Video exceeds the 60 MB retrieval limit."
+                  : image
+                    ? "Image exceeds the 8 MB retrieval limit."
+                    : "Source exceeds the 2 MB retrieval limit.",
               ),
             );
             return;
@@ -139,7 +163,7 @@ async function request(
     );
     const deadline = setTimeout(
       () => req.destroy(new Error("Source retrieval exceeded 15 seconds.")),
-      15000,
+      kind === "video" ? 45000 : 15000,
     );
     req.on("close", () => clearTimeout(deadline));
     req.on("error", reject);
@@ -160,10 +184,110 @@ export function validateWikimediaImageUrl(value: string) {
   return url;
 }
 export async function retrieveWikimediaImage(value: string) {
-  const result = await request(validateWikimediaImageUrl(value), true);
+  const result = await request(validateWikimediaImageUrl(value), "image");
   if (result.location || !result.bytes)
     throw new Error("Media redirect or empty image rejected.");
   return result.bytes;
+}
+export async function retrieveSourceMedia(
+  value: string,
+  kind: "image" | "video",
+) {
+  let url = validateUrl(value);
+  for (let i = 0; i < 4; i++) {
+    if (url.protocol !== "https:")
+      throw new Error("Source media must use HTTPS.");
+    const result = await request(url, kind);
+    if (result.location) {
+      url = validateUrl(new URL(result.location, url).href);
+      continue;
+    }
+    if (!result.bytes?.length) throw new Error("Empty source media.");
+    return result.bytes;
+  }
+  throw new Error("Too many media redirects.");
+}
+export async function retrieveMediaPage(value: string) {
+  await assertRobots(value);
+  return follow(value);
+}
+// RFC 9309: our group if named, else "*"; longest matching rule wins, Allow wins ties.
+export function robotsAllows(
+  robots: string,
+  path: string,
+  agent = "worldnewsresearch",
+) {
+  const groups: { agents: string[]; rules: [boolean, string][] }[] = [];
+  let open = false;
+  for (const raw of robots.split(/\r?\n/)) {
+    const [key, ...rest] = raw.replace(/#.*/, "").split(":");
+    const field = key.trim().toLowerCase(),
+      value = rest.join(":").trim();
+    if (field === "user-agent") {
+      if (!open) groups.push({ agents: [], rules: [] });
+      groups.at(-1)!.agents.push(value.toLowerCase());
+      open = true;
+    } else if ((field === "allow" || field === "disallow") && groups.length) {
+      open = false;
+      if (value) groups.at(-1)!.rules.push([field === "allow", value]);
+    }
+  }
+  const pick = (match: (a: string) => boolean) =>
+    groups.filter((g) => g.agents.some(match)).flatMap((g) => g.rules);
+  const named = pick((a) => a !== "*" && agent.includes(a));
+  const rules = named.length ? named : pick((a) => a === "*");
+  let best: [boolean, string] | undefined;
+  for (const rule of rules) {
+    const pattern = rule[1]
+      .replace(/[.+?^{}()|[\]\\]/g, "\\$&")
+      .replace(/\*/g, ".*");
+    if (!new RegExp(`^${pattern}`).test(path)) continue;
+    if (
+      !best ||
+      rule[1].length > best[1].length ||
+      (rule[1].length === best[1].length && rule[0])
+    )
+      best = rule;
+  }
+  return best ? best[0] : true;
+}
+const robotsCache = new Map<string, { at: number; body: Promise<string> }>();
+async function follow(value: string, kind: Kind = "page") {
+  let url = validateUrl(value);
+  for (let i = 0; i < 5; i++) {
+    const r = await request(url, kind);
+    if (!r.location) return { url, body: r.body };
+    url = validateUrl(new URL(r.location, url).href);
+  }
+  throw new Error("Too many source redirects.");
+}
+async function assertRobots(value: string) {
+  const url = validateUrl(value);
+  let cached = robotsCache.get(url.origin);
+  if (!cached || cached.at < Date.now() - 86_400_000) {
+    // ponytail: an unreachable or missing robots.txt counts as allowed
+    cached = {
+      at: Date.now(),
+      body: follow(`${url.origin}/robots.txt`).then(
+        (r) => r.body,
+        () => "",
+      ),
+    };
+    robotsCache.set(url.origin, cached);
+  }
+  if (!robotsAllows(await cached.body, url.pathname + url.search))
+    throw new Error(
+      "The site's robots.txt disallows automated retrieval of this page.",
+    );
+}
+// Automated research and feed polling respect robots.txt; editor-requested retrieval does not.
+export async function retrieveAutomated(value: string): Promise<Source> {
+  await assertRobots(value);
+  return retrieve(value);
+}
+export async function retrieveFeed(value: string) {
+  await assertRobots(value);
+  return (await follow(value, "feed")).body;
 }
 export async function retrieve(value: string): Promise<Source> {
   let url = validateUrl(value),

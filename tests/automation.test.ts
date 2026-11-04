@@ -1,4 +1,5 @@
 import test from "node:test";
+import { stubQualityReport } from "./fixtures/quality-report.js";
 import assert from "node:assert/strict";
 import { Store } from "../server/db.js";
 import {
@@ -10,13 +11,16 @@ import {
   wordCount,
 } from "../server/domain.js";
 import {
+  namesSource,
   automaticScript,
   prepareAutomaticVideo,
   queueAutomaticVideo,
   scheduleAutomaticVideos,
 } from "../server/automation.js";
+import { productionRecord } from "../server/production-record.js";
 import { createApp } from "../server/app.js";
 import type { Story } from "../shared/types.js";
+import { startWorker } from "../server/worker.js";
 process.env.MEDIA_DISCOVERY_ENABLED = "false";
 
 function fixture(): Story {
@@ -44,11 +48,11 @@ function fixture(): Story {
     }),
   );
   story.claims = [
-    "The agency announced a new programme that will involve researchers working at its science centre and reviewing the timetable for the next phase of the work.",
+    "The agency announced a new programme that will involve researchers working at its science centre and reviewing the timetable for the next phase of the work, the agency said in a statement released by its press office.",
     "The centre will review its timetable before it proceeds with the next stage of the announced programme, according to reporting from the two separate publications.",
   ].map((text) => ({
     id: id(),
-    text,
+    text: Array(3).fill(text).join(" "),
     status: "supported fact",
     reviewed: false,
     evidence: story.sources.map((s) => ({
@@ -75,8 +79,8 @@ test("automatic narration uses eligible findings without approving claims or sou
     destinations: ["export"],
   };
   const next = automaticScript(story);
-  assert.equal(next.format, "brief");
-  assert(wordCount(next) >= 60 && wordCount(next) < 140);
+  assert.equal(next.format, "explainer");
+  assert(wordCount(next) >= 140 && wordCount(next) <= 205);
   assert.equal(next.segments.length, 2);
   assert(!next.segments.some((s) => s.claimIds.includes("unresolved")));
   assert.equal(next.approval, undefined);
@@ -188,6 +192,60 @@ test("failed automatic production stops until an explicit continuation", async (
   }
 });
 
+test("the worker retains a held preview, blocks automatic readiness and does not schedule a retry", async () => {
+  const store = new Store(undefined, ":memory:");
+  await store.init();
+  const story = automaticScript(fixture());
+  await store.create(story);
+  let calls = 0;
+  const stop = startWorker(store, {
+    render: async (input) => {
+      calls++;
+      const render = stubQualityReport(input, {
+        version: input.version,
+        video: "v.mp4",
+        card: "c.png",
+        story: "s.png",
+        captions: "c.vtt",
+        manifest: "m.json",
+        duration: 78,
+        production: productionRecord(input, 70, 70),
+        createdAt: now(),
+        voice: "local",
+        privatePreview: true,
+      });
+      render.quality!.status = "held";
+      render.quality!.findings = [
+        {
+          code: "visual-coverage",
+          severity: "hold",
+          message: "Insufficient useful visuals",
+        },
+      ];
+      return render;
+    },
+  });
+  try {
+    const deadline = Date.now() + 4000;
+    while (
+      Date.now() < deadline &&
+      !(await store.jobs()).some((j) => j.status === "succeeded")
+    )
+      await new Promise((r) => setTimeout(r, 25));
+    const latest = (await store.get(story.id))!;
+    assert.equal(latest.renders.length, 1);
+    assert.equal(latest.automation!.state, "blocked");
+    assert.equal(latest.stage, "awaiting-review");
+    await scheduleAutomaticVideos(store);
+    assert.equal((await store.jobs()).length, 1);
+    assert.equal(calls, 1);
+    assert.equal((await store.costs()).length, 0);
+  } finally {
+    stop();
+    await store.close();
+  }
+});
+
 test("a private automatic render cannot be approved even after editorial checks are clear", async () => {
   const store = new Store(undefined, ":memory:");
   await store.init();
@@ -203,12 +261,14 @@ test("a private automatic render cannot be approved even after editorial checks 
       story: "s.png",
       captions: "c.vtt",
       manifest: "m.json",
-      duration: 35,
+      duration: 78,
+      production: productionRecord(story, 70, 70),
       createdAt: now(),
       voice: "local",
       privatePreview: true,
     },
   ];
+  stubQualityReport(story, story.renders[0]);
   assert.deepEqual(gates(story), []);
   await store.create(story);
   const server = createApp(store).listen(0, "127.0.0.1");
@@ -235,4 +295,56 @@ test("a private automatic render cannot be approved even after editorial checks 
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await store.close();
   }
+});
+
+test("automatic narration lets a self-attributed primary statement speak for itself", () => {
+  assert.ok(
+    namesSource("The FBI said it observed…", "Federal Bureau of Investigation"),
+  );
+  assert.ok(
+    namesSource(
+      "The Federal Bureau of Investigation said…",
+      "Federal Bureau of Investigation",
+    ),
+  );
+  assert.ok(
+    !namesSource(
+      "North Korea was responsible.",
+      "Federal Bureau of Investigation",
+    ),
+  );
+  assert.ok(
+    !namesSource("The FBIS archive…", "Federal Bureau of Investigation"),
+  );
+  const story = fixture();
+  story.sources[0] = {
+    ...story.sources[0],
+    publisher: "Federal Bureau of Investigation",
+    kind: "primary",
+  };
+  const named = Array(3)
+    .fill(
+      "The FBI said the agency announced a new programme that will involve researchers working at its science centre and reviewing the timetable for the next phase of the work.",
+    )
+    .join(" ");
+  const unnamed = Array(2)
+    .fill(
+      "The agency announced that the centre will review its timetable before it proceeds with the next stage of the announced programme, as described in its statement.",
+    )
+    .join(" ");
+  story.claims = [named, unnamed].map((text) => ({
+    id: id(),
+    text,
+    status: "attributed statement",
+    reviewed: false,
+    evidence: [
+      { sourceId: "S0", passage: story.sources[0].text, relation: "supports" },
+    ],
+  }));
+  const texts = automaticScript(story).segments.map((s) => s.text);
+  assert.equal(texts[0], named);
+  assert.equal(
+    texts[1],
+    `According to Federal Bureau of Investigation, ${unnamed}`,
+  );
 });

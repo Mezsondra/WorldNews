@@ -1,6 +1,10 @@
-import type { Job, Story, Claim } from "../shared/types.js";
+import type { Job, Story, Claim, Source } from "../shared/types.js";
 import { Store } from "./db.js";
-import { discoverVisuals, attachDiscoveredVisuals } from "./media-discovery.js";
+import { qualityReleaseIssues } from "./video-quality.js";
+import {
+  discoverStoryMedia,
+  attachDiscoveredVisuals,
+} from "./media-discovery.js";
 import {
   gates,
   id,
@@ -8,8 +12,22 @@ import {
   now,
   previewGates,
   wordCount,
+  narrationFormat,
+  NARRATION_LIMITS,
 } from "./domain.js";
 
+// "Federal Bureau of Investigation" is named by its full name or its initials, "FBI".
+export function namesSource(text: string, publisher: string) {
+  const initials = publisher
+    .split(/\s+/)
+    .filter((w) => /^\p{Lu}/u.test(w))
+    .map((w) => w[0])
+    .join("");
+  return (
+    text.toLowerCase().includes(publisher.toLowerCase()) ||
+    (initials.length >= 2 && new RegExp(`\\b${initials}\\b`).test(text))
+  );
+}
 export function automaticScript(story: Story) {
   if (story.eventAt && Number.isNaN(Date.parse(story.eventAt)))
     throw new Error(
@@ -18,7 +36,13 @@ export function automaticScript(story: Story) {
   if (["held", "rejected", "approved"].includes(story.stage))
     throw new Error("Resume an editable story before automatic production.");
   const eligible: Claim[] = story.claims.filter((claim) => {
-    if (!["supported fact", "attributed statement"].includes(claim.status))
+    if (
+      ![
+        "supported fact",
+        "attributed statement",
+        "attributed reporting",
+      ].includes(claim.status)
+    )
       return false;
     const probe = {
       ...story,
@@ -33,25 +57,28 @@ export function automaticScript(story: Story) {
   let words = 0;
   const segments = [];
   for (const claim of eligible) {
-    const publishers = [
-      ...new Set(
-        claim.evidence
-          .filter((e) => e.relation === "supports")
-          .map((e) => story.sources.find((s) => s.id === e.sourceId)?.publisher)
-          .filter((p): p is string => !!p),
-      ),
-    ].slice(0, 2);
-    // Copy the checked finding verbatim; add only its recorded publisher attribution.
-    const text = `Reporting from ${publishers.join(" and ")}: ${claim.text}`;
+    const supporting = claim.evidence
+      .filter((e) => e.relation === "supports")
+      .map((e) => story.sources.find((s) => s.id === e.sourceId))
+      .filter((s): s is Source => !!s);
+    const speaker = supporting.find((s) => s.kind === "primary")?.publisher;
+    // Copy the checked finding verbatim; add only its recorded attribution.
+    // An attributed statement that already names its original source reads as "The FBI said…".
+    const text =
+      claim.status === "attributed statement" && speaker
+        ? namesSource(claim.text, speaker)
+          ? claim.text
+          : `According to ${speaker}, ${claim.text}`
+        : claim.text;
     const count = text.split(/\s+/).length;
-    if (words + count > 185) continue;
+    if (words + count > NARRATION_LIMITS.max) continue;
     words += count;
     segments.push({ id: id(), text, claimIds: [claim.id] });
-    if (segments.length === 6) break;
+    if (segments.length === 8) break;
   }
-  if (words < 60)
+  if (words < NARRATION_LIMITS.min)
     throw new Error(
-      `Only ${words} usable narration words are supported. Add evidence; the bot will not pad the script.`,
+      `Only ${words} usable narration words are supported; at least ${NARRATION_LIMITS.min} are required for a minute-long story. Add evidence and useful context; the bot will not pad the script.`,
     );
   const omitted = story.claims.length - segments.length;
   const warnings = [
@@ -72,7 +99,8 @@ export function automaticScript(story: Story) {
   const next = invalidate({
     ...story,
     segments,
-    format: words < 140 ? "brief" : "explainer",
+    shotOverrides: undefined,
+    format: narrationFormat(words),
     automation: {
       enabled: true,
       state: "rendering",
@@ -180,13 +208,20 @@ export async function scheduleAutomaticVideos(store: Store) {
     }
     const render = story.renders.find((r) => r.version === story.version);
     if (render) {
-      flow.state = "ready";
-      flow.message = "Private video ready in Preview";
+      const held = qualityReleaseIssues(story, render).length > 0;
+      flow.state = held ? "blocked" : "ready";
+      flow.message = held
+        ? "Preview available · automatic quality checks need attention"
+        : "Private video passed automatic checks";
       await store.save(story, story.version);
       continue;
     }
     const rendering = flow.state === "rendering" && !!story.segments.length;
-    if (!rendering && !story.claims.length) {
+    if (
+      !rendering &&
+      !story.claims.length &&
+      flow.method !== "evidence-backed"
+    ) {
       flow.state = "blocked";
       flow.message =
         "Research has not produced usable claims. Inspect research progress and the available API allowance.";
@@ -197,12 +232,29 @@ export async function scheduleAutomaticVideos(store: Store) {
       id: id(),
       storyId: story.id,
       version: story.version,
-      kind: rendering ? "render" : "prepare",
+      kind: rendering
+        ? "render"
+        : flow.method === "evidence-backed"
+          ? "construct"
+          : "prepare",
       privatePreview: true,
+      captions:
+        rendering && flow.previewCaptions?.version === story.version
+          ? flow.previewCaptions.provider
+          : "estimated",
+      tts:
+        rendering && flow.previewNarration?.version === story.version
+          ? flow.previewNarration.provider
+          : "local",
       status: "queued",
       progress: rendering
-        ? "Waiting for local video render"
-        : "Preparing source-linked narration",
+        ? flow.previewNarration?.version === story.version &&
+          flow.previewNarration.provider === "gemini"
+          ? "Waiting for Gemini video render"
+          : "Waiting for local video render"
+        : flow.method === "evidence-backed"
+          ? "Building a full evidence-backed story"
+          : "Preparing source-linked narration",
       attempts: 0,
       lease: 0,
       createdAt: now(),
@@ -223,7 +275,7 @@ export async function scheduleAutomaticVideos(store: Store) {
 
 export async function prepareAutomaticVideo(store: Store, input: Story) {
   const script = automaticScript(input);
-  const photos = await discoverVisuals(script);
+  const photos = await discoverStoryMedia(script);
   const next = attachDiscoveredVisuals(script, photos);
   await store.snapshot(input);
   await store.save(next, input.version);
@@ -249,7 +301,7 @@ export async function prepareAutomaticVideo(store: Store, input: Story) {
     kind: "visuals",
     createdAt: now(),
     data: {
-      summary: `${photos.assets.length} reusable archive/context photo(s) found.`,
+      summary: `${photos.assets.length} source photo(s), portraits and video clip(s) found.`,
       query: photos.query,
       candidates: photos.candidates,
       cautions: photos.warnings,

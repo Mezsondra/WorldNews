@@ -15,6 +15,7 @@ import type {
   ResearchRun,
   Story,
 } from "../shared/types";
+import { CONSTRUCTION_POLICY } from "../shared/construction";
 type Act = (fn: () => Promise<unknown>, message?: string) => Promise<void>;
 async function call(url: string, body?: unknown) {
   const r = await fetch("/api" + url, {
@@ -30,14 +31,40 @@ export function AutomationPanel({
   story,
   disabled,
   act,
+  pilot,
+  packageIssues = [],
 }: {
   story: Story;
   disabled: boolean;
   act: Act;
+  pilot?: PilotStatus;
+  packageIssues?: string[];
 }) {
   const flow = story.automation;
   const active =
     !!flow && ["waiting-research", "queued", "rendering"].includes(flow.state);
+  const [construction, setConstruction] = useState<AIReport>();
+  useEffect(() => {
+    let stopped = false;
+    const refresh = () =>
+      void call(`/stories/${story.id}/ai-reports`)
+        .then((reports: AIReport[]) => {
+          if (!stopped)
+            setConstruction(reports.find((r) => r.kind === "construction"));
+        })
+        .catch(() => {});
+    refresh();
+    const timer = active ? setInterval(refresh, 1500) : undefined;
+    return () => {
+      stopped = true;
+      if (timer) clearInterval(timer);
+    };
+  }, [story.id, story.version, active]);
+  const attempted = pilot?.events.some(
+    (e) =>
+      e.operationKey ===
+      `${story.id}:${story.version}:claude:story-construction`,
+  );
   return (
     <section className="editor-section">
       <div className="section-title">
@@ -45,9 +72,9 @@ export function AutomationPanel({
         <Clapperboard size={18} />
       </div>
       <p className="hint">
-        Research → source-linked script → related archive photos → narrated
-        private video. Local narration and estimated captions use no extra API
-        credit.
+        Build a coherent minute-long story, check its headline, narration,
+        on-screen text and publishing description, then prepare a private video.
+        Missing context can trigger one bounded research pass.
       </p>
       {flow && (
         <p role="status">
@@ -59,6 +86,36 @@ export function AutomationPanel({
         disabled={
           disabled ||
           active ||
+          !!attempted ||
+          !pilot?.enabled ||
+          !pilot.providers.claude ||
+          pilot.remainingUsd < CONSTRUCTION_POLICY.allowanceUsd ||
+          ["held", "rejected", "approved", "producing"].includes(story.stage)
+        }
+        onClick={() =>
+          void act(
+            () =>
+              call(`/stories/${story.id}/construct`, {
+                version: story.version,
+              }),
+            "Full story construction queued. The saved report will show progress, evidence checks and any gaps.",
+          )
+        }
+      >
+        <ShieldCheck size={15} /> Research &amp; build full story
+      </button>
+      <p className="provider-note">
+        US${CONSTRUCTION_POLICY.allowanceUsd.toFixed(2)} reserved from the
+        existing allowance for at most two draft attempts, two separate checks
+        and one context search pass. Local preview narration follows at no extra
+        API cost. Uncertain paid requests are not retried.
+      </p>
+      <button
+        className="button primary"
+        disabled={
+          disabled ||
+          active ||
+          !!story.editorial ||
           story.renders.some((r) => r.version === story.version) ||
           ["held", "rejected", "approved"].includes(story.stage)
         }
@@ -79,13 +136,93 @@ export function AutomationPanel({
           ? "Working automatically"
           : flow?.state === "ready"
             ? "Video ready in Preview"
-            : "Make video automatically"}
+            : "Prepare from existing findings · no API cost"}
       </button>
       <p className="provider-note">
         Only claims passing the evidence checks enter narration. Unresolved
-        claims stay in the dossier. Brief previews can be shorter than a minute;
-        publication requires review and a final render.
+        claims stay in the dossier. All new videos need at least a minute of
+        narration; sparse evidence is held for more context. Publication
+        requires review and a final render.
       </p>
+      {construction && (
+        <details className="ai-report" open>
+          <summary>Full-story construction · v{construction.version}</summary>
+          {typeof construction.data.summary === "string" && (
+            <p role="status">{construction.data.summary}</p>
+          )}
+          {typeof construction.data.reason === "string" && (
+            <p className="render-error">{construction.data.reason}</p>
+          )}
+          {Array.isArray(construction.data.gaps) &&
+            !!construction.data.gaps.length && (
+              <ul>
+                {(construction.data.gaps as string[]).map((gap, i) => (
+                  <li key={i}>{gap}</li>
+                ))}
+              </ul>
+            )}
+          {Array.isArray(construction.data.queries) &&
+            !!construction.data.queries.length && (
+              <details>
+                <summary>Context searches performed</summary>
+                <ul>
+                  {(construction.data.queries as string[]).map((q, i) => (
+                    <li key={i}>{q}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          {Array.isArray(construction.data.savedSourceIds) &&
+            !!construction.data.savedSourceIds.length &&
+            typeof construction.data.jobId === "string" && (
+              <p>
+                <a
+                  href={`/api/stories/${story.id}/construction/${construction.data.jobId}/sources`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Inspect saved context snapshots
+                </a>
+              </p>
+            )}
+          <p className="hint">
+            The writer and checker run as separate passes on the same model. A
+            passing automated check remains provisional and does not replace
+            editorial review.
+          </p>
+        </details>
+      )}
+      {story.editorial && (
+        <details className="ai-report">
+          <summary>
+            {packageIssues.length
+              ? "Story package · check needs attention"
+              : "Checked story package"}
+          </summary>
+          {packageIssues.map((message, i) => (
+            <p className="render-error" key={i}>
+              {message}
+            </p>
+          ))}
+          <p>
+            <strong>Headline:</strong> {story.title}
+          </p>
+          <p>
+            <strong>Publishing description:</strong>{" "}
+            {story.editorial.publishing.text}
+          </p>
+          <ul>
+            {story.editorial.onScreen.map((line) => (
+              <li key={line.id}>{line.text}</li>
+            ))}
+          </ul>
+          <p className="hint">
+            {story.editorial.check?.assertions.length || 0} assertions recorded
+            in the separate evidence check. Edits to facts, wording or source
+            origins require a fresh check.
+          </p>
+        </details>
+      )}
       {flow?.warnings.map((warning, i) => (
         <p className="hint" key={i}>
           {warning}
@@ -141,13 +278,15 @@ export function AssistantPanel({
     ["queued", "running"].includes(r.status),
   );
   const label = (kind: AIReport["kind"]) =>
-    kind === "visuals"
-      ? "Visual research"
-      : kind === "verification"
-        ? "Web research & evidence check"
-        : kind === "research"
-          ? "Attached source analysis"
-          : "Draft result";
+    kind === "construction"
+      ? "Full-story construction"
+      : kind === "visuals"
+        ? "Visual research"
+        : kind === "verification"
+          ? "Web research & evidence check"
+          : kind === "research"
+            ? "Attached source analysis"
+            : "Draft result";
   return (
     <section className="editor-section assistant-panel">
       <div className="section-title">
@@ -158,6 +297,10 @@ export function AssistantPanel({
         Analyze saved snapshots or draft narration below. Use the research bot
         above to find sources and check evidence on the web. Findings need
         editorial review.
+      </p>
+      <p className="hint">
+        Drafts need 140–205 words and at least 60 seconds of narration. Closing
+        sources follow the story and do not count toward that minimum.
       </p>
       <div className="assistant-actions">
         <button
@@ -234,6 +377,33 @@ export function AssistantPanel({
               Not applied: {latest.data.validationError}
             </p>
           )}
+          {latest.kind === "draft" &&
+            latest.data.outcome === "draft" &&
+            typeof latest.data.validationError === "string" &&
+            latest.version === story.version && (
+              <button
+                className="button"
+                disabled={
+                  disabled ||
+                  researching ||
+                  ["held", "rejected", "approved", "producing"].includes(
+                    story.stage,
+                  )
+                }
+                onClick={() =>
+                  void act(async () => {
+                    await call(
+                      `/stories/${story.id}/ai-reports/${latest.id}/apply`,
+                      { version: story.version },
+                    );
+                    setReportId("");
+                    setRefresh((n) => n + 1);
+                  }, "Saved draft applied as a new unreviewed revision. No API credit used.")
+                }
+              >
+                Revalidate & apply saved draft · no API cost
+              </button>
+            )}
           {typeof latest.data.reason === "string" && latest.data.reason && (
             <p>{latest.data.reason}</p>
           )}
@@ -502,7 +672,7 @@ export function PilotPanel({ pilot }: { pilot?: PilotStatus }) {
           <strong>US${pilot.limitUsd.toFixed(2)}</strong>
         </div>
         <div>
-          <small>RESERVED</small>
+          <small>COUNTED</small>
           <strong>US${pilot.reservedUsd.toFixed(2)}</strong>
         </div>
         <div>
@@ -512,10 +682,11 @@ export function PilotPanel({ pilot }: { pilot?: PilotStatus }) {
       </div>
       <p className="hint">
         <ShieldCheck size={14} />
-        Reservations are conservative usage allowances, not invoices. They count
-        credit usage and stay held after timeout or uncertain failure. Inspected
-        Google rejections documented as unbilled can be reconciled once. The
-        total persists across restarts. Hosting is excluded.
+        Each call reserves an allowance first. When it finishes, its cost is
+        estimated from recorded tokens at list prices and the unused part is
+        released. Uncertain or interrupted calls keep their full reservation.
+        Estimates are not invoices; check provider billing. The total persists
+        across restarts. Hosting is excluded.
       </p>
       <div className="usage-events">
         {pilot.events.slice(0, 12).map((event) => (
@@ -531,7 +702,11 @@ export function PilotPanel({ pilot }: { pilot?: PilotStatus }) {
               {event.note && <p>{event.note}</p>}
             </div>
             <span className="badge">{event.state}</span>
-            <span>US${event.reservedUsd.toFixed(2)}</span>
+            <span title={`Reserved US$${event.reservedUsd.toFixed(2)}`}>
+              {event.actualUsd !== undefined
+                ? `US$${event.actualUsd.toFixed(3)}`
+                : `US$${event.reservedUsd.toFixed(2)} held`}
+            </span>
           </div>
         ))}
       </div>

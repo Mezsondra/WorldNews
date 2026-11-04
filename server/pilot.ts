@@ -95,6 +95,7 @@ try {
       summary: candidate.summary,
       claims: candidate.claims.map((c) => ({ ...c, reviewed: false })),
       segments: candidate.segments,
+      format: candidate.format,
     });
     await store.snapshot(current);
     await store.save(draft, current.version);

@@ -1,4 +1,5 @@
 import test from "node:test";
+import { stubQualityReport } from "./fixtures/quality-report.js";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
@@ -8,8 +9,13 @@ import { get as httpGet } from "node:http";
 import { Store } from "../server/db.js";
 import { newStory, gates, invalidate, id, now } from "../server/domain.js";
 import { createApp } from "../server/app.js";
-import { isPublicAddress, validateUrl } from "../server/fetcher.js";
+import {
+  isPublicAddress,
+  robotsAllows,
+  validateUrl,
+} from "../server/fetcher.js";
 import { frame } from "../server/media.js";
+import { productionRecord } from "../server/production-record.js";
 import { sourcePage } from "../server/source-page.js";
 import { startWorker } from "../server/worker.js";
 import type { Story, Job } from "../shared/types.js";
@@ -76,6 +82,7 @@ test("several outlets sharing one lineage do not corroborate a fact", () => {
   s.claims[0].evidence.push({ ...s.claims[0].evidence[0], sourceId: "S2" });
   assert(gates(s).some((g) => g.code === "lineage"));
   s.sources[1].lineage = "Independent institute";
+  s.sources[1].hash = "independent-snapshot";
   assert(!gates(s).some((g) => g.code === "lineage"));
 });
 test("secondary report cannot be relabelled as an original attributed statement", () => {
@@ -145,6 +152,34 @@ test("material edits invalidate exact-version approval and every claim review", 
   assert.equal(next.version, 2);
   assert.equal(next.approval, undefined);
   assert(next.claims.every((c) => !c.reviewed));
+});
+test("robots.txt: named group overrides *, longest rule wins, Allow wins ties", () => {
+  const robots = `# comment
+User-agent: *
+Disallow: /private
+Allow: /private/press
+Disallow: /*.pdf$
+
+User-agent: OtherBot
+User-agent: WorldNewsResearch
+Disallow: /
+Allow: /news/
+`;
+  assert.equal(robotsAllows(robots, "/news/a", "otherbot"), true);
+  assert.equal(robotsAllows(robots, "/about", "otherbot"), false);
+  assert.equal(robotsAllows(robots, "/news/a"), true);
+  assert.equal(robotsAllows(robots, "/about"), false);
+  const star = robots.split("\n\n")[0];
+  assert.equal(robotsAllows(star, "/private/x"), false);
+  assert.equal(robotsAllows(star, "/private/press/1"), true);
+  assert.equal(robotsAllows(star, "/doc.pdf"), false);
+  assert.equal(robotsAllows(star, "/doc.pdf?x"), true);
+  assert.equal(robotsAllows(star, "/"), true);
+  assert.equal(robotsAllows("", "/anything"), true);
+  assert.equal(
+    robotsAllows("User-agent: *\nDisallow: /a\nAllow: /a", "/a"),
+    true,
+  );
 });
 test("fetcher rejects private, link-local, mapped, reserved, and non-HTTP addresses", () => {
   for (const address of [
@@ -335,11 +370,13 @@ test("HTTP workflow: guards, exact approval, public snapshot, edits, and correct
       video: "fixture/video.mp4",
       captions: "fixture/captions.vtt",
       manifest: "fixture/manifest.json",
-      duration: 65,
+      duration: 78,
+      production: productionRecord(s, 70, 70),
       voice: "Test",
       createdAt: now(),
       captionWarnings: ["Recognized number differs from script."],
     });
+    stubQualityReport(s, s.renders[0]);
     await store.save(s, 1);
     assert.equal(
       (

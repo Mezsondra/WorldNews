@@ -1190,21 +1190,78 @@ dd {
   margin-left: auto;
 }
 .asset-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
   gap: 10px;
   margin-top: 20px;
   align-items: center;
 }
-.asset-row img {
-  width: 45px;
-  height: 45px;
-  object-fit: cover;
+.asset-row img,
+.asset-row video {
+  width: 150px;
+  height: 110px;
+  flex: 0 0 150px;
+  object-fit: contain;
+  background: #152a26;
   border-radius: 3px;
 }
 .asset-row strong,
 .asset-row small {
   display: block;
   font-size: 10px;
+}
+.asset-row > div {
+  min-width: 0;
+}
+.asset-row strong {
+  font-size: 12px;
+  line-height: 1.45;
+}
+.asset-row p {
+  font-size: 11px;
+  margin: 7px 0;
+}
+@media (max-width: 600px) {
+  .asset-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .asset-row img,
+  .asset-row video {
+    width: 100%;
+    height: 180px;
+    flex-basis: auto;
+  }
+}
+.media-rights-editor {
+  grid-column: 1 / -1;
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding: 16px 0;
+}
+.media-rights-editor summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #43583c;
+}
+.media-rights-editor form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+.media-rights-editor label {
+  min-width: 0;
+}
+.media-rights-editor textarea {
+  min-height: 110px;
+}
+.media-rights-editor .review-check {
+  flex-direction: row;
+  margin: 0;
+}
+.media-rights-editor .button {
+  justify-self: start;
 }
 .asset-row small {
   font-size: 9px;
@@ -2273,4 +2330,260 @@ dd {
 .research-run > small {
   color: var(--muted);
   font-size: 11px;
+}
+.discovery {
+  margin-top: 40px;
+  padding-top: 25px;
+  border-top: 1px solid var(--line);
+}
+.lead {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+.lead h3 {
+  font-family: Georgia, serif;
+  font-size: 17px;
+  line-height: 1.35;
+  font-weight: 400;
+  margin: 7px 0;
+  color: #374930;
+}
+.lead summary,
+.feeds summary {
+  font-size: 11px;
+  color: #557342;
+  cursor: pointer;
+}
+.lead ul {
+  margin: 8px 0;
+  padding-left: 16px;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.lead a {
+  color: #4b5f42;
+}
+.lead-update {
+  font-size: 11px;
+  color: #67844e;
+  margin: 0 0 6px;
+}
+.lead-warning {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: #a47e63;
+  margin: 6px 0 0;
+}
+.lead-actions {
+  display: flex;
+  gap: 18px;
+  margin-top: 6px;
+}
+.feeds {
+  margin-top: 22px;
+}
+.feed-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+.feed-row small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  margin-top: 2px;
+}
+.feed-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.feed-form input {
+  flex: 1 1 140px;
+}
+.starter-feeds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.starter-feeds .badge {
+  gap: 4px;
+  cursor: pointer;
+  text-transform: none;
+}
+
+/* Short-shot editing shares the studio's quiet surfaces and single accent. */
+.preview-stage.vertical .preview-media {
+  max-width: 340px;
+}
+.shot-timeline {
+  border-top: 1px solid var(--line);
+  padding-top: 24px;
+  margin-top: 25px;
+  min-width: 0;
+}
+.timeline-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+}
+.timeline-heading h2 {
+  font:
+    24px/1.25 Georgia,
+    serif;
+  margin: 8px 0;
+}
+.timeline-heading > span {
+  font-size: 10px;
+  color: #6a795f;
+  text-align: right;
+}
+.shot-strip {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 12px 2px 18px;
+  scroll-snap-type: x proximity;
+}
+.shot-item {
+  flex: 0 0 108px;
+  padding: 0 0 8px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  text-align: left;
+  color: var(--ink);
+  cursor: pointer;
+  scroll-snap-align: start;
+  transition:
+    transform 0.16s ease,
+    border-color 0.16s ease;
+}
+.shot-item:hover {
+  transform: translateY(-3px);
+}
+.shot-item.selected {
+  border-color: #71845c;
+  background: #e8eddf;
+}
+.shot-item img,
+.shot-placeholder {
+  width: 100%;
+  aspect-ratio: 9/16;
+  object-fit: cover;
+  display: block;
+  border-radius: 2px;
+}
+.shot-item > span:not(.shot-placeholder) {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  padding: 8px 6px 2px;
+}
+.shot-item small {
+  display: block;
+  font-size: 9px;
+  padding: 3px 6px;
+  color: #66745c;
+}
+.shot-editor,
+.version-compare {
+  border-top: 1px solid var(--line);
+  padding: 16px 0;
+}
+.shot-editor summary,
+.version-compare summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #43583c;
+}
+.shot-editor[open] form,
+.version-compare[open] label {
+  animation: inspector-reveal 0.18s ease-out;
+}
+.shot-editor form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 0.55fr);
+  align-items: end;
+  gap: 16px;
+}
+.shot-editor form .hint {
+  grid-column: 1/-1;
+  margin: 0;
+}
+.shot-editor form .button {
+  justify-self: start;
+}
+.shot-editor label {
+  min-width: 0;
+}
+.shot-editor select {
+  width: 100%;
+}
+.shot-narration {
+  font:
+    15px/1.6 Georgia,
+    serif;
+  color: #53614c;
+  max-width: 60ch;
+  margin: 18px 0;
+}
+.version-compare label {
+  margin-top: 16px;
+}
+.version-compare video {
+  width: 100%;
+  max-height: 350px;
+  margin: 12px 0;
+  background: #10251f;
+}
+.version-compare a {
+  font-size: 11px;
+}
+@keyframes inspector-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (max-width: 700px) {
+  .preview-stage.vertical .preview-media {
+    max-width: 300px;
+  }
+  .timeline-heading {
+    display: block;
+  }
+  .timeline-heading > span {
+    text-align: left;
+  }
+  .shot-editor form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shot-item,
+  .shot-editor[open] form,
+  .version-compare[open] label {
+    transition: none;
+    animation: none;
+  }
+}
+.preview-notes {
+  margin: 16px 0;
+}
+.preview-notes summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: #617354;
 }
